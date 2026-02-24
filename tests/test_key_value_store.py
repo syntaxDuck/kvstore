@@ -107,3 +107,35 @@ class TestKeyValueStore:
         assert store.value_store["a"] == 1
         assert store.value_store["b"] == 2
         log2.close()
+
+    def test_apply_to_memory_unknown_operation(self, store):
+        cmd = Command(op="UNKNOWN", key="foo", val="bar")
+        res = store.apply_to_memory(cmd)
+        assert res.is_ok is False
+
+    def test_set_overwrites_existing_key(self, store):
+        store.value_store["foo"] = "original"
+        cmd = Command(op="SET", key="foo", val="updated")
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["foo"] == "updated"
+
+    def test_apply_raises_when_log_closed(self, temp_log_dir):
+        wal = WriteAheadLog(path=temp_log_dir)
+        store = KeyValueStore(log=wal)
+        wal.close()
+        cmd = Command(op="SET", key="foo", val="bar")
+        with pytest.raises(Exception):
+            store.apply(cmd)
+
+    def test_apply_to_memory_returns_err_on_value_error(self, store):
+        cmd = Command(op="INVALID_OP", key="foo", val="bar")
+        res = store.apply_to_memory(cmd)
+        assert res.is_ok is False
+
+    def test_delete_operation_not_logged(self, store, wal):
+        cmd = Command(op="DELETE", key="foo", val=None)
+        store.apply(cmd)
+        wal.file_handle.seek(0)
+        content = wal.file_handle.read()
+        assert "DELETE" in content

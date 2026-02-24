@@ -1,5 +1,6 @@
 import pytest
 import tempfile
+from pathlib import Path
 
 from src.core.log import WriteAheadLog, WriteAheadLogResponse
 from src.core.command import Command
@@ -95,3 +96,28 @@ class TestWriteAheadLog:
         log.close()
         log.close()
         assert log.file_handle is None
+
+    def test_replay_log_raises_when_closed(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        log.close()
+        with pytest.raises(LogError):
+            list(log.replay_log())
+
+    def test_file_persists_between_instances(self, temp_log_dir):
+        log1 = WriteAheadLog(path=temp_log_dir)
+        log1.append(Command(op="SET", key="persist", val="data"))
+        log1.close()
+
+        log2 = WriteAheadLog(path=temp_log_dir)
+        log2.append(Command(op="SET", key="more", val="data2"))
+        log2.close()
+
+        log3 = WriteAheadLog(path=temp_log_dir)
+        commands = list(log3.replay_log())
+        assert len(commands) == 2
+        log3.close()
+
+    def test_log_path_constructed_correctly(self, temp_log_dir):
+        log = WriteAheadLog(name="mylog.log", path=temp_log_dir)
+        assert log.log_path == Path(temp_log_dir) / "mylog.log"
+        log.close()
