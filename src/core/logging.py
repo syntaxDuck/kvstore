@@ -9,12 +9,8 @@ def setup_logging() -> None:
     log_dir = Path(settings.LOGS_DIR)
     log_dir.mkdir(exist_ok=True)
 
-    if settings.LOG_FORMAT == "simple":
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        date_format = "%Y-%m-%d %H:%M:%S"
-    else:
-        log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-        date_format = "%Y-%m-%d %H:%M:%S"
+    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    date_format = "%Y-%m-%d %H:%M:%S"
 
     handlers = []
 
