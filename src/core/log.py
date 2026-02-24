@@ -62,7 +62,7 @@ class WriteAheadLog:
             self.file_handle.write("\n")
             self.file_handle.flush()
             os.fsync(self.file_handle.fileno())
-            logger.info(f"Successfully append command: {cmd}")
+            logger.debug(f"Successfully appended command: {cmd}")
             return WriteAheadLogResponse.ok()
         except OSError as e:
             logger.error(f"Failed to append command to log: {e}")

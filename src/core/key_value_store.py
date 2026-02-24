@@ -49,7 +49,7 @@ class KeyValueStore:
         try:
             return KeyValueStoreResponse.ok(self.value_store[cmd.key])
         except KeyError:
-            logger.info(f"Cannot get Key: {cmd.key} doesn't exist in value store")
+            logger.debug(f"Cannot get Key: {cmd.key} doesn't exist in value store")
         return KeyValueStoreResponse.err()
 
     def _handle_delete(self, cmd: Command) -> KeyValueStoreResponse:
@@ -57,7 +57,7 @@ class KeyValueStore:
             del self.value_store[cmd.key]
             return KeyValueStoreResponse.ok()
         except KeyError:
-            logger.warning(f"Cannot delete Key: {cmd.key} doesn't exist in value store")
+            logger.debug(f"Cannot delete Key: {cmd.key} doesn't exist in value store")
         return KeyValueStoreResponse.err()
 
     def build_from_log(self) -> None:
