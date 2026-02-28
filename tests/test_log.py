@@ -121,3 +121,89 @@ class TestWriteAheadLog:
         log = WriteAheadLog(name="mylog.log", path=temp_log_dir)
         assert log.log_path == Path(temp_log_dir) / "mylog.log"
         log.close()
+
+
+class TestWriteAheadLogEdgeCases:
+    def test_replay_empty_log(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        replayed = list(log.replay_log())
+        assert replayed == []
+        log.close()
+
+    def test_append_with_none_value(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        cmd = Command(op="SET", key="key", val=None)
+        res = log.append(cmd)
+        assert res.is_ok is True
+        log.close()
+
+    def test_append_with_complex_value(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        cmd = Command(op="SET", key="key", val={"nested": [1, 2, {"deep": "value"}]})
+        res = log.append(cmd)
+        assert res.is_ok is True
+
+        replayed = list(log.replay_log())
+        assert len(replayed) == 1
+        assert replayed[0].val == {"nested": [1, 2, {"deep": "value"}]}
+        log.close()
+
+    def test_append_unicode_content(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        cmd = Command(op="SET", key="键", val="hello世界🎉")
+        res = log.append(cmd)
+        assert res.is_ok is True
+
+        replayed = list(log.replay_log())
+        assert replayed[0].key == "键"
+        assert replayed[0].val == "hello世界🎉"
+        log.close()
+
+    def test_append_multiple_types(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        log.append(Command(op="SET", key="str", val="text"))
+        log.append(Command(op="SET", key="int", val=42))
+        log.append(Command(op="SET", key="float", val=3.14))
+        log.append(Command(op="SET", key="bool", val=True))
+        log.append(Command(op="SET", key="list", val=[1, 2, 3]))
+
+        replayed = list(log.replay_log())
+        assert len(replayed) == 5
+        assert replayed[0].val == "text"
+        assert replayed[1].val == 42
+        assert replayed[2].val == 3.14
+        assert replayed[3].val == True
+        assert replayed[4].val == [1, 2, 3]
+        log.close()
+
+    def test_log_length_accuracy(self, temp_log_dir):
+        log = WriteAheadLog(path=temp_log_dir)
+        assert log.log_length == 0
+
+        log.append(Command(op="SET", key="a", val=1))
+        assert log.log_length == 1
+
+        log.append(Command(op="SET", key="b", val=2))
+        assert log.log_length == 2
+
+        log.append(Command(op="SET", key="c", val=3))
+        assert log.log_length == 3
+        log.close()
+
+    def test_replay_after_close_and_reopen(self, temp_log_dir):
+        log1 = WriteAheadLog(path=temp_log_dir)
+        log1.append(Command(op="SET", key="a", val=1))
+        log1.append(Command(op="SET", key="b", val=2))
+        log1.close()
+
+        log2 = WriteAheadLog(path=temp_log_dir)
+        replayed1 = list(log2.replay_log())
+        assert len(replayed1) == 2
+
+        log2.append(Command(op="SET", key="c", val=3))
+        log2.close()
+
+        log3 = WriteAheadLog(path=temp_log_dir)
+        replayed2 = list(log3.replay_log())
+        assert len(replayed2) == 3
+        log3.close()
