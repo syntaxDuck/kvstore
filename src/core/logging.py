@@ -9,45 +9,26 @@ def setup_logging() -> None:
     log_dir = Path(settings.LOGS_DIR)
     log_dir.mkdir(exist_ok=True)
 
-    log_format = "%(asctime)s - %(name)s - %(levelname)s - %(message)s"
-    date_format = "%Y-%m-%d %H:%M:%S"
-
-    handlers = []
-
+    # File handler - gets all levels (DEBUG+)
     if settings.LOG_TO_FILE:
-        app_handler = logging.FileHandler(
-            log_dir / "app.log", mode="a", encoding="utf-8"
+        file_handler = logging.FileHandler(log_dir / "app.log")
+        file_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
         )
-        app_handler.setFormatter(logging.Formatter(log_format, date_format))
-        handlers.append(app_handler)
+        file_handler.setLevel(logging.DEBUG)
+        logging.root.addHandler(file_handler)
 
-        error_handler = logging.FileHandler(
-            filename=log_dir / "errors.log", mode="a", encoding="utf-8"
-        )
-        error_handler.setLevel(logging.ERROR)
-        error_handler.setFormatter(logging.Formatter(log_format, date_format))
-        handlers.append(error_handler)
-
+    # Console handler - gets INFO+ only
     if settings.LOG_TO_CONSOLE:
         console_handler = logging.StreamHandler(sys.stdout)
-        console_handler.setFormatter(logging.Formatter(log_format, date_format))
-        handlers.append(console_handler)
+        console_handler.setFormatter(
+            logging.Formatter("%(asctime)s - %(name)s - %(levelname)s - %(message)s")
+        )
+        console_handler.setLevel(logging.INFO)
+        logging.root.addHandler(console_handler)
 
-    logging.basicConfig(
-        level=getattr(logging, settings.LOGGING_LEVEL.upper()),
-        format=log_format,
-        datefmt=date_format,
-        handlers=handlers,
-        force=True,
-    )
-
-    configure_component_loggers()
-
-    logging.info("Application logging initilized")
-
-
-def configure_component_loggers() -> None:
-    logging.getLogger("asyncio").setLevel(logging.WARNING)
+    # Root logger level
+    logging.root.setLevel(logging.DEBUG)
 
 
 def get_logger(name: str) -> logging.Logger:

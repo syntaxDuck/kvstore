@@ -27,8 +27,7 @@ class KeyValueStoreResponse:
 
 
 class KeyValueStore:
-    def __init__(self, log: WriteAheadLog = WriteAheadLog()) -> None:
-        self.log = log
+    def __init__(self) -> None:
         self.value_store = {}
 
         self._ops_no_log = ["GET"]
@@ -38,9 +37,6 @@ class KeyValueStore:
             "DELETE": self._handle_delete,
         }
 
-        self.build_from_log()
-        logger.debug(f"Value Store After rebuild: {self.value_store}")
-
     def _handle_set(self, cmd: Command) -> KeyValueStoreResponse:
         self.value_store[cmd.key] = cmd.val
         return KeyValueStoreResponse.ok(cmd.val)
@@ -49,7 +45,7 @@ class KeyValueStore:
         try:
             return KeyValueStoreResponse.ok(self.value_store[cmd.key])
         except KeyError:
-            logger.debug(f"Cannot get Key: {cmd.key} doesn't exist in value store")
+            pass
         return KeyValueStoreResponse.err()
 
     def _handle_delete(self, cmd: Command) -> KeyValueStoreResponse:
@@ -57,35 +53,28 @@ class KeyValueStore:
             del self.value_store[cmd.key]
             return KeyValueStoreResponse.ok()
         except KeyError:
-            logger.debug(f"Cannot delete Key: {cmd.key} doesn't exist in value store")
+            pass
         return KeyValueStoreResponse.err()
 
-    def build_from_log(self) -> None:
-        logger.info("Rebuilding store from log...")
-        for cmd in self.log.replay_log():
-            logger.debug(f"Replaying command: {cmd}")
-            self.apply_to_memory(cmd)
+    def build_from_log(self, log: WriteAheadLog) -> None:
+        logger.info("Rebuilding store from log")
+        for cmd in log.replay_log():
+            self.apply(cmd)
 
-    def apply_to_memory(self, cmd: Command) -> KeyValueStoreResponse:
+    def apply(self, cmd: Command) -> KeyValueStoreResponse:
         try:
             handler = self._ops.get(cmd.op)
             if handler is None:
                 raise ValueError(f"No memory operation of type: {cmd.op}")
             res = handler(cmd)
             if res.is_ok:
-                logger.debug(f"Applied Command {cmd}, Value store: {self.value_store}")
                 return res
             return KeyValueStoreResponse.err()
         except ValueError as e:
             return KeyValueStoreResponse.err(e)
-
-    def apply(self, cmd: Command) -> KeyValueStoreResponse:
-        log_res = None
-        if cmd.op not in self._ops_no_log:
-            log_res = self.log.append(cmd)
-
-        if log_res is None or log_res.is_ok:
-            mem_res = self.apply_to_memory(cmd)
-            return mem_res
-
-        return KeyValueStoreResponse.err()
+        except AttributeError as e:
+            logger.error(f"Invalid command object: {e}")
+            return KeyValueStoreResponse.err(e)
+        except Exception as e:
+            logger.error(f"Unexpected error applying command: {e}")
+            return KeyValueStoreResponse.err(e)

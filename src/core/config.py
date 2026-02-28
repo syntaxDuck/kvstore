@@ -7,15 +7,11 @@ class Settings(BaseSettings):
         super().__init__(**kwargs)
 
     LOGS_DIR: str = Field(default="logs", description="Directory that logs are stored")
-    LOG_FORMAT: str = Field(default="simple", description="Log format")
     LOG_TO_FILE: bool = Field(
         default=True, description="Flag to enable logging to file"
     )
     LOG_TO_CONSOLE: bool = Field(
         default=True, description="Flag to enable logging to console"
-    )
-    LOGGING_LEVEL: str = Field(
-        default="DEBUG", description="Logging level for the project"
     )
 
     model_config = SettingsConfigDict(env_file=".env", case_sensitive=False)

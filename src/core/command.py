@@ -1,22 +1,21 @@
 from typing import Any
-from dataclasses import dataclass, asdict
+from pydantic import BaseModel
 import json
 
 
-@dataclass
-class Command:
+class Command(BaseModel):
     op: str
     key: str
     val: Any
 
     @classmethod
     def deserialize(cls, serialized_string: str):
-        dict = json.loads(serialized_string)
-        return cls(**dict)
+        data = json.loads(serialized_string)
+        return cls(**data)
 
     def serialize(self):
-        cmd_dict = asdict(self)
-        return json.dumps(cmd_dict)
+        data = self.model_dump()
+        return json.dumps(data)
 
     def __str__(self):
         return f"{self.op} {self.key} {self.val}"
