@@ -1,27 +1,12 @@
 import pytest
-import tempfile
 
 from src.core.key_value_store import KeyValueStore, KeyValueStoreResponse
-from src.core.log import WriteAheadLog
 from src.core.command import Command
 
 
 @pytest.fixture
-def temp_log_dir():
-    with tempfile.TemporaryDirectory() as tmpdir:
-        yield tmpdir
-
-
-@pytest.fixture
-def wal(temp_log_dir):
-    log = WriteAheadLog(path=temp_log_dir)
-    yield log
-    log.close()
-
-
-@pytest.fixture
-def store(wal):
-    return KeyValueStore(log=wal)
+def store():
+    return KeyValueStore()
 
 
 class TestKeyValueStoreResponse:
@@ -45,10 +30,8 @@ class TestKeyValueStoreResponse:
 
 
 class TestKeyValueStore:
-    def test_init_default_log(self):
-        store = KeyValueStore()
-        assert store.log is not None
-        store.log.close()
+    def test_init(self, store):
+        assert store.value_store == {}
 
     def test_set_stores_value(self, store):
         cmd = Command(op="SET", key="foo", val="bar")
@@ -80,37 +63,9 @@ class TestKeyValueStore:
         res = store.apply(cmd)
         assert res.is_ok is False
 
-    def test_apply_writes_to_log(self, store, wal):
-        cmd = Command(op="SET", key="foo", val="bar")
-        store.apply(cmd)
-        wal.file_handle.seek(0)
-        content = wal.file_handle.read()
-        assert "SET" in content
-        assert "foo" in content
-        assert "bar" in content
-
-    def test_apply_skips_log_for_get(self, store, wal):
-        cmd = Command(op="GET", key="foo", val=None)
-        store.apply(cmd)
-        wal.file_handle.seek(0)
-        content = wal.file_handle.read()
-        assert content.strip() == ""
-
-    def test_build_from_log_replays_commands(self, temp_log_dir):
-        log1 = WriteAheadLog(path=temp_log_dir)
-        log1.append(Command(op="SET", key="a", val=1))
-        log1.append(Command(op="SET", key="b", val=2))
-        log1.close()
-
-        log2 = WriteAheadLog(path=temp_log_dir)
-        store = KeyValueStore(log=log2)
-        assert store.value_store["a"] == 1
-        assert store.value_store["b"] == 2
-        log2.close()
-
-    def test_apply_to_memory_unknown_operation(self, store):
+    def test_apply_unknown_operation(self, store):
         cmd = Command(op="UNKNOWN", key="foo", val="bar")
-        res = store.apply_to_memory(cmd)
+        res = store.apply(cmd)
         assert res.is_ok is False
 
     def test_set_overwrites_existing_key(self, store):
@@ -120,22 +75,90 @@ class TestKeyValueStore:
         assert res.is_ok is True
         assert store.value_store["foo"] == "updated"
 
-    def test_apply_raises_when_log_closed(self, temp_log_dir):
-        wal = WriteAheadLog(path=temp_log_dir)
-        store = KeyValueStore(log=wal)
-        wal.close()
-        cmd = Command(op="SET", key="foo", val="bar")
-        with pytest.raises(Exception):
-            store.apply(cmd)
-
-    def test_apply_to_memory_returns_err_on_value_error(self, store):
+    def test_apply_returns_err_on_value_error(self, store):
         cmd = Command(op="INVALID_OP", key="foo", val="bar")
-        res = store.apply_to_memory(cmd)
+        res = store.apply(cmd)
         assert res.is_ok is False
 
-    def test_delete_operation_not_logged(self, store, wal):
-        cmd = Command(op="DELETE", key="foo", val=None)
-        store.apply(cmd)
-        wal.file_handle.seek(0)
-        content = wal.file_handle.read()
-        assert "DELETE" in content
+
+class TestKeyValueStoreEdgeCases:
+    def test_set_empty_string_value(self, store):
+        cmd = Command(op="SET", key="empty", val="")
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["empty"] == ""
+
+    def test_set_unicode_value(self, store):
+        cmd = Command(op="SET", key="unicode", val="hello世界🎉")
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["unicode"] == "hello世界🎉"
+
+    def test_set_unicode_key(self, store):
+        cmd = Command(op="SET", key="键", val="value")
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["键"] == "value"
+
+    def test_set_large_value(self, store):
+        large_value = "x" * 10000
+        cmd = Command(op="SET", key="large", val=large_value)
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["large"] == large_value
+
+    def test_set_none_value(self, store):
+        cmd = Command(op="SET", key="none", val=None)
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["none"] is None
+
+    def test_get_after_delete_returns_error(self, store):
+        store.value_store["foo"] = "bar"
+        delete_cmd = Command(op="DELETE", key="foo", val=None)
+        store.apply(delete_cmd)
+
+        get_cmd = Command(op="GET", key="foo", val=None)
+        res = store.apply(get_cmd)
+        assert res.is_ok is False
+
+    def test_delete_twice_returns_error(self, store):
+        store.value_store["foo"] = "bar"
+        delete_cmd = Command(op="DELETE", key="foo", val=None)
+
+        res1 = store.apply(delete_cmd)
+        assert res1.is_ok is True
+
+        res2 = store.apply(delete_cmd)
+        assert res2.is_ok is False
+
+    def test_multiple_keys_different_types(self, store):
+        store.value_store["string"] = "value"
+        store.value_store["int"] = 42
+        store.value_store["float"] = 3.14
+        store.value_store["list"] = [1, 2, 3]
+        store.value_store["dict"] = {"key": "value"}
+
+        assert store.value_store["string"] == "value"
+        assert store.value_store["int"] == 42
+        assert store.value_store["float"] == 3.14
+        assert store.value_store["list"] == [1, 2, 3]
+        assert store.value_store["dict"] == {"key": "value"}
+
+    def test_special_characters_in_key(self, store):
+        cmd = Command(op="SET", key="key-with-dash", val="dash")
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["key-with-dash"] == "dash"
+
+        cmd2 = Command(op="SET", key="key.with.dots", val="dots")
+        res2 = store.apply(cmd2)
+        assert res2.is_ok is True
+        assert store.value_store["key.with.dots"] == "dots"
+
+    def test_overwrite_different_types(self, store):
+        store.value_store["key"] = "string"
+        cmd = Command(op="SET", key="key", val=123)
+        res = store.apply(cmd)
+        assert res.is_ok is True
+        assert store.value_store["key"] == 123
