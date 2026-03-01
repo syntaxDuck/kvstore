@@ -58,8 +58,8 @@ class KeyValueStore:
 
     def build_from_log(self, log: WriteAheadLog) -> None:
         logger.info("Rebuilding store from log")
-        for cmd in log.replay_log():
-            self.apply(cmd)
+        for entry in log.replay_log():
+            self.apply(entry.cmd)
 
     def apply(self, cmd: Command) -> KeyValueStoreResponse:
         try:

@@ -2,39 +2,26 @@ from io import TextIOWrapper
 import os
 from pathlib import Path
 from collections.abc import Iterator
-from dataclasses import dataclass
+
 
 from .exceptions import LogError
-from .types import Command
+from .types import Command, LogEntry, LogDetails
 from .logging import get_logger
+from .types import WriteAheadLogResponse
+import json
 
 logger = get_logger(__name__)
 
 
-@dataclass
-class WriteAheadLogResponse:
-    status: int
-
-    @classmethod
-    def ok(cls):
-        return cls(1)
-
-    @classmethod
-    def err(cls):
-        return cls(-1)
-
-    @property
-    def is_ok(self):
-        return self.status > 0
-
-
 class WriteAheadLog:
     def __init__(self, name: str = "store_log.kvs", path: str = ".") -> None:
-        self.log_name = name
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.log_name = name
         self.log_path = self.path / name
-        self.log_length = 0
+        self.details = LogDetails(
+            term=0, last_log_index=0, last_log_term=0, log_length=0
+        )
 
         self.file_handle: TextIOWrapper | None = None
         self.open()
@@ -49,16 +36,34 @@ class WriteAheadLog:
     def open(self) -> None:
         self.file_handle = open(self.log_path, "a+")
         self.file_handle.seek(0)
-        self.log_length = sum(1 for _ in self.file_handle)
+        entry = None
+        for line in self.file_handle:
+            self.details.log_length += 1
+            entry = LogEntry(**json.loads(line))
+
+        if entry:
+            self.details.last_log_index = entry.index
+            self.details.last_log_term = entry.term
+
         self.file_handle.seek(0, 2)
 
-    def append(self, cmd: Command) -> WriteAheadLogResponse:
+    def get_last(self) -> LogEntry:
+        if not self.file_handle:
+            raise LogError
+
+        last_line = self.file_handle.readline()
+        return LogEntry(**json.loads(last_line))
+
+    def append(self, term: int, cmd: Command) -> WriteAheadLogResponse:
         if not self.file_handle:
             raise LogError
 
         try:
-            self.log_length += 1
-            self.file_handle.write(cmd.serialize())
+            self.details.term = term
+            self.details.last_log_index += 1
+            entry = LogEntry(index=self.details.last_log_index, term=term, cmd=cmd)
+
+            self.file_handle.write(entry.serialize())
             self.file_handle.write("\n")
             self.file_handle.flush()
             os.fsync(self.file_handle.fileno())
@@ -67,13 +72,13 @@ class WriteAheadLog:
             logger.error(f"Failed to append command to log: {e}")
             raise LogError
 
-    def replay_log(self) -> Iterator[Command]:
+    def replay_log(self) -> Iterator[LogEntry]:
         if not self.file_handle:
             raise LogError
 
         self.file_handle.seek(0)
         for line in self.file_handle:
-            yield Command.deserialize(line)
+            yield LogEntry.deserialize(line)
 
     def close(self):
         if self.file_handle and not self.file_handle.closed:

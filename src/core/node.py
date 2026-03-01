@@ -8,7 +8,12 @@ from .peer_client import PeerClient
 from .protocol import Protocol
 from .role_state import Role, RoleState
 from .rpc import RpcDipatcher
-from .types import NodeDetails, RpcRequest, RpcResponse
+from .types import (
+    Command,
+    NodeDetails,
+    RpcRequest,
+    RpcResponse,
+)
 
 logger = get_logger(__name__)
 
@@ -50,12 +55,13 @@ class Node:
         self.rpc.register("CLIENT_WRITE", self._handle_client_write)
         self.rpc.register("CLIENT_GET", self._handle_client_get)
         self.rpc.register("APPEND_ENTRY", self._handle_append_entry)
-        self.commit_index = 0
 
         self.peers: list[PeerClient] = []
 
         logger.info(f"Node initialized: {self.details}")
 
+    # ELECTION METHODS
+    ############################################################################
     def _start_election_timer(self) -> None:
         self._election_task = asyncio.create_task(self._election_timeout_loop())
 
@@ -79,6 +85,8 @@ class Node:
             self.role_state.become_leader()
             return
 
+    # HEARTBEAT METHODS
+    ############################################################################
     def _start_heartbeat(self) -> None:
         if self._election_task:
             self._election_task.cancel()
@@ -88,7 +96,7 @@ class Node:
     async def _handle_heartbeat(self) -> None:
         while self.is_leader:
             try:
-                await self.send_to_all_peers(RpcRequest.append_entry(self.details))
+                await self.send_to_all_peers(RpcRequest.ping(self.details))
             except ValueError:
                 logger.warning("Cannot send heartbeat, no peers registered")
                 pass
@@ -99,14 +107,18 @@ class Node:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
 
+    # RPC HANDLER METHODS
+    ############################################################################
     async def _handle_ping(self, _: RpcRequest) -> RpcResponse:
-        logger.debug(f"Pinged node: {self.id}")
+        self._election_reset_flag = True
         return RpcResponse.ok(self.details, {"Success": "Ping success"})
 
     async def _handle_client_get(self, req: RpcRequest) -> RpcResponse:
-        val = None
-        if req.cmd:
-            val = self.store.value_store.get(req.cmd.key)
+        if not req.payload:
+            return RpcResponse.err(self.details, {"Error": "No command provided"})
+
+        cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
+        val = self.store.value_store.get(cmd.key)
         return RpcResponse.ok(self.details, {"val": val})
 
     async def _handle_client_write(self, req: RpcRequest) -> RpcResponse:
@@ -118,12 +130,16 @@ class Node:
                 },
             )
 
-        if not req.cmd:
-            logger.debug("No command provided")
-            return RpcResponse.err(self.details)
-        self.log.append(req.cmd)
+        if not req.payload:
+            return RpcResponse.err(self.details, {"Error": "No command provided"})
+
+        cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
+
+        if req.log_details is None:
+            req.log_details = self.log.details
+
         responses = await self.send_to_all_peers(
-            RpcRequest.append_entry(self.details, req.cmd)
+            RpcRequest.append_entry(self.details, self.log.details, cmd)
         )
 
         count = 0
@@ -132,7 +148,8 @@ class Node:
                 count += 1
 
         if count > len(self.peers) // 2:
-            self.store.apply(req.cmd)
+            self.log.append(req.log_details.term, cmd)
+            self.store.apply(cmd)
             logger.debug(f"{self.store.value_store}")
             return RpcResponse.ok(self.details, {"Success": "Client Write Success"})
 
@@ -142,15 +159,17 @@ class Node:
         )
 
     async def _handle_append_entry(self, req: RpcRequest) -> RpcResponse:
-        self._election_reset_flag = True
-        if not req.cmd:
-            return RpcResponse.ok(self.details, {"Success": "Append Entry Success"})
+        if not req.payload or not req.log_details:
+            return RpcResponse.err(self.details, {"Error": "No command provided"})
         logger.debug(f"Appending node: {self.id}")
-        self.log.append(req.cmd)
-        self.store.apply(req.cmd)
+        cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
+        self.log.append(req.log_details.term, cmd)
+        self.store.apply(cmd)
         logger.debug(f"{self.store.value_store}")
         return RpcResponse.ack(self.details)
 
+    # SERVER
+    ########################################################################
     async def handle_connection(
         self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
     ) -> None:
@@ -186,6 +205,8 @@ class Node:
         async with server:
             await server.serve_forever()
 
+    # PEER METHODS
+    ############################################################################
     async def send_to_all_peers(self, request: RpcRequest) -> list[RpcResponse]:
         if len(self.peers) == 0:
             raise ValueError("No peers registered")
@@ -227,10 +248,15 @@ class Node:
 
         logger.warning(f"Failed to register peer: {peer}")
 
+    # CLASS PROPS
+    ############################################################################
     @property
     def details(self) -> NodeDetails:
         return NodeDetails(
-            id=self.id, role=self.role_state.role, host=self.host, port=self.port
+            id=self.id,
+            role=self.role_state.role,
+            host=self.host,
+            port=self.port,
         )
 
     @property
