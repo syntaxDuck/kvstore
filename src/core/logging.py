@@ -5,7 +5,7 @@ import sys
 from .config import settings
 
 
-def setup_logging() -> None:
+def setup_logging():
     log_dir = Path(settings.LOGS_DIR)
     log_dir.mkdir(exist_ok=True)
 
@@ -31,5 +31,5 @@ def setup_logging() -> None:
     logging.root.setLevel(logging.DEBUG)
 
 
-def get_logger(name: str) -> logging.Logger:
+def get_logger(name):
     return logging.getLogger(name)

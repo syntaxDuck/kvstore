@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Any, Callable
 
-from .command import Command
+from .types import Command
 from .log import WriteAheadLog
 from .logging import get_logger
 

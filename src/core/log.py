@@ -5,7 +5,7 @@ from collections.abc import Iterator
 from dataclasses import dataclass
 
 from .exceptions import LogError
-from .command import Command
+from .types import Command
 from .logging import get_logger
 
 logger = get_logger(__name__)
