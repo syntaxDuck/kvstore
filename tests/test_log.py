@@ -3,7 +3,7 @@ import tempfile
 from pathlib import Path
 
 from src.core.log import WriteAheadLog, WriteAheadLogResponse
-from src.core.command import Command
+from src.core.types import Command
 from src.core.exceptions import LogError
 
 
