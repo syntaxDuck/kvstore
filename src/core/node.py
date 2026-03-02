@@ -1,6 +1,7 @@
 import asyncio
 import random
 
+from .exceptions import LogError
 from .key_value_store import KeyValueStore
 from .log import WriteAheadLog
 from .logging import get_logger
@@ -39,8 +40,8 @@ class Node:
             ),
         )
         self.role_state._on_become_leader = self._start_heartbeat
-        self.role_state._on_become_follower = self._stop_heartbeat
-        self.role_state._on_become_candidate = self._stop_heartbeat
+        self.role_state._on_become_follower = self._step_down
+        self.role_state._on_become_candidate = self._step_down
 
         self._heartbeat_task: asyncio.Task | None = None
         self._election_task: asyncio.Task | None = None
@@ -55,15 +56,23 @@ class Node:
         self.rpc.register("CLIENT_WRITE", self._handle_client_write)
         self.rpc.register("CLIENT_GET", self._handle_client_get)
         self.rpc.register("APPEND_ENTRY", self._handle_append_entry)
+        self.rpc.register("REQUEST_VOTE", self._handle_vote_request)
 
         self.peers: list[PeerClient] = []
 
         logger.info(f"Node initialized: {self.details}")
 
+    # STATE CHANGE METHODS
+    ############################################################################
+    def _step_down(self) -> None:
+        self._stop_heartbeat()
+        self._start_election_timer()
+
     # ELECTION METHODS
     ############################################################################
     def _start_election_timer(self) -> None:
-        self._election_task = asyncio.create_task(self._election_timeout_loop())
+        if self._election_task is None or self._election_task.done():
+            self._election_task = asyncio.create_task(self._election_timeout_loop())
 
     async def _election_timeout_loop(self) -> None:
         while True:
@@ -76,14 +85,36 @@ class Node:
                 self._election_reset_flag = False
                 continue
 
-            await self._start_election()
+            if self.is_follower:
+                await self._start_election()
 
     async def _start_election(self):
         logger.info(f"Node: {self.id}, Starting election...")
-        if len(self.peers) != 0 and not self.leader_address:
-            logger.info(f"Node: {self.id}, is almighty leader")
+
+        self.role_state.become_candidate(self.id)
+        ballots = await self.send_to_all_peers(
+            RpcRequest.request_vote(
+                self.id,
+                self.role.value,
+                self.role_state.term,
+                self.log.details.index,
+                self.log.details.term,
+            )
+        )
+
+        yeahs = nahs = 0
+        for ballot in ballots:
+            logger.debug(f"Election ballot for term {self.role_state.term}: {ballot}")
+            if not ballot.is_ok or not ballot.payload:
+                continue
+            if ballot.payload.get("vote"):
+                yeahs += 1
+            else:
+                nahs += 1
+
+        if yeahs > len(self.peers) / 2:
+            logger.info(f"Node: {self.id} is the leader")
             self.role_state.become_leader()
-            return
 
     # HEARTBEAT METHODS
     ############################################################################
@@ -96,50 +127,69 @@ class Node:
     async def _handle_heartbeat(self) -> None:
         while self.is_leader:
             try:
-                await self.send_to_all_peers(RpcRequest.ping(self.details))
+                await self.send_to_all_peers(
+                    RpcRequest.ping(
+                        self.id,
+                        self.role.value,
+                        self.role_state.term,
+                        self.log.details.index,
+                        self.log.details.term,
+                    )
+                )
             except ValueError:
                 logger.warning("Cannot send heartbeat, no peers registered")
                 pass
             await asyncio.sleep(self.role_state.heartbeat_timeout)
 
-    async def _stop_heartbeat(self) -> None:
+    def _stop_heartbeat(self) -> None:
         if self._heartbeat_task:
             self._heartbeat_task.cancel()
             self._heartbeat_task = None
 
     # RPC HANDLER METHODS
     ############################################################################
-    async def _handle_ping(self, _: RpcRequest) -> RpcResponse:
+    async def _handle_ping(self, req: RpcRequest) -> RpcResponse:
+        if req.term > self.role_state.term:
+            self.role_state.become_follower(req.term)
         self._election_reset_flag = True
-        return RpcResponse.ok(self.details, {"Success": "Ping success"})
+        return RpcResponse.ok(self.id, self.role.value, {"Success": "Ping success"})
 
     async def _handle_client_get(self, req: RpcRequest) -> RpcResponse:
         if not req.payload:
-            return RpcResponse.err(self.details, {"Error": "No command provided"})
+            return RpcResponse.err(
+                self.id, self.role.value, {"Error": "No command provided"}
+            )
 
         cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
         val = self.store.value_store.get(cmd.key)
-        return RpcResponse.ok(self.details, {"val": val})
+        return RpcResponse.ok(self.id, self.role.value, {"val": val})
 
     async def _handle_client_write(self, req: RpcRequest) -> RpcResponse:
         if not self.is_leader:
             return RpcResponse.err(
-                self.details,
+                self.id,
+                self.role.value,
                 {
                     "Error": f"Sent CLIENT WRITE command to follower node, should send to Leader node at {self.leader_address}"
                 },
             )
 
         if not req.payload:
-            return RpcResponse.err(self.details, {"Error": "No command provided"})
+            return RpcResponse.err(
+                self.id, self.role.value, {"Error": "No command provided"}
+            )
 
         cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
 
-        if req.log_details is None:
-            req.log_details = self.log.details
-
         responses = await self.send_to_all_peers(
-            RpcRequest.append_entry(self.details, self.log.details, cmd)
+            RpcRequest.append_entry(
+                self.id,
+                self.role.value,
+                self.role_state.term,
+                self.log.details.index,
+                self.log.details.term,
+                cmd,
+            )
         )
 
         count = 0
@@ -148,25 +198,53 @@ class Node:
                 count += 1
 
         if count > len(self.peers) // 2:
-            self.log.append(req.log_details.term, cmd)
+            self.log.append(self.role_state.term, cmd)
             self.store.apply(cmd)
             logger.debug(f"{self.store.value_store}")
-            return RpcResponse.ok(self.details, {"Success": "Client Write Success"})
+            return RpcResponse.ok(
+                self.id, self.role.value, {"Success": "Client Write Success"}
+            )
 
         logger.debug("Less than half of the peers acknolaged")
         return RpcResponse.err(
-            self.details, {"Error": "Majority of peers did not acknloage"}
+            self.id, self.role.value, {"Error": "Majority of peers did not acknolage"}
         )
 
     async def _handle_append_entry(self, req: RpcRequest) -> RpcResponse:
-        if not req.payload or not req.log_details:
-            return RpcResponse.err(self.details, {"Error": "No command provided"})
-        logger.debug(f"Appending node: {self.id}")
+        if not req.payload:
+            return RpcResponse.err(
+                self.id, self.role.value, {"Error": "No command provided"}
+            )
+        if req.term < self.role_state.term:
+            return RpcResponse.err(
+                self.id,
+                self.role.value,
+                {"Error": f"Stale leader term, {req.term}<{self.role_state.term}"},
+            )
+        if req.term > self.role_state.term:
+            self.role_state.become_follower(req.term)
+        logger.debug(f"AppendEntry from leader {req.node_id}, term {req.term}")
         cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
-        self.log.append(req.log_details.term, cmd)
+        self.log.append(req.term, cmd)
         self.store.apply(cmd)
         logger.debug(f"{self.store.value_store}")
-        return RpcResponse.ack(self.details)
+        return RpcResponse.ack(self.id, self.role.value)
+
+    async def _handle_vote_request(self, req: RpcRequest) -> RpcResponse:
+        try:
+            if req.term > self.role_state.term:
+                self.role_state.become_follower(req.term)
+            logger.debug(f"Vote request from node {req.node_id}, term {req.term}")
+            vote = self.get_vote_decision(
+                req.node_id, req.term, req.last_log_index, req.last_log_term
+            )
+            logger.debug(f"Vote decision for node {req.node_id}: {vote}")
+            self.role_state.voted_for = req.node_id if vote else None
+            return RpcResponse.vote_response(self.id, self.role.value, vote)
+        except LogError:
+            return RpcResponse.err(
+                self.id, self.role.value, {"Error": "Issue validating log"}
+            )
 
     # SERVER
     ########################################################################
@@ -175,20 +253,28 @@ class Node:
     ) -> None:
         try:
             msg = await self.protocol.recv_message(reader)
-            res = await self.rpc.dispatch(RpcRequest(**msg))
+            req = RpcRequest(**msg)
+
+            if req.node_role == Role.LEADER and self.log.details.term != req.term:
+                self.role_state.voted_for = None
+            res = await self.rpc.dispatch(req)
             await self.protocol.send_message(writer, res.model_dump())
 
         except ConnectionError as e:
             logger.warning(f"Connection error handling request: {e}")
-            res = RpcResponse.err(self.details, {"Error": "Connection error"})
+            res = RpcResponse.err(
+                self.id, self.role.value, {"Error": "Connection error"}
+            )
             await self.protocol.send_message(writer, res.model_dump())
         except ValueError as e:
             logger.warning(f"Invalid request: {e}")
-            res = RpcResponse.err(self.details, {"Error": str(e)})
+            res = RpcResponse.err(self.id, self.role.value, {"Error": str(e)})
             await self.protocol.send_message(writer, res.model_dump())
         except Exception as e:
             logger.error(f"Unexpected error handling connection: {e}")
-            res = RpcResponse.err(self.details, {"Error": "Internal server error"})
+            res = RpcResponse.err(
+                self.id, self.role.value, {"Error": "Internal server error"}
+            )
             await self.protocol.send_message(writer, res.model_dump())
         finally:
             writer.close()
@@ -217,7 +303,7 @@ class Node:
                 responses.append(await peer.send_rpc(request))
             except (ConnectionError, TimeoutError, OSError) as e:
                 logger.warning(f"Failed to send rpc to peer {peer.id}: {e}")
-                responses.append(RpcResponse.err(peer.details, {"Error": str(e)}))
+                responses.append(RpcResponse.err(peer.id, peer.role, {"Error": str(e)}))
 
         return responses
 
@@ -240,13 +326,46 @@ class Node:
     async def register_peer(self, peer_details: NodeDetails) -> None:
         logger.info(f"Registering peer: {peer_details}")
         peer = PeerClient(peer_details)
-        res = await peer.send_rpc(RpcRequest.ping(self.details))
+        res = await peer.send_rpc(
+            RpcRequest.ping(
+                self.id,
+                self.role.value,
+                self.role_state.term,
+                self.log.details.index,
+                self.log.details.term,
+            )
+        )
         if res.is_ok:
             logger.info(f"Successfully registered peer: {peer_details.address}")
             self.peers.append(peer)
             return
 
         logger.warning(f"Failed to register peer: {peer}")
+
+    # Utility
+    ###########################################################################
+    def get_vote_decision(
+        self,
+        candidate_id: int,
+        candidate_term: int,
+        candidate_last_log_index: int,
+        candidate_last_log_term: int,
+    ) -> bool:
+        if candidate_term < self.log.details.term:
+            return False
+
+        if self.role_state.voted_for and self.role_state.voted_for != candidate_id:
+            return False
+
+        if candidate_last_log_term < self.log.details.term:
+            return False
+        if (
+            candidate_last_log_term == self.log.details.term
+            and candidate_last_log_index < self.log.details.index
+        ):
+            return False
+
+        return True
 
     # CLASS PROPS
     ############################################################################
@@ -266,6 +385,14 @@ class Node:
     @property
     def is_leader(self) -> bool:
         return self.role_state.role == Role.LEADER
+
+    @property
+    def is_candidate(self) -> bool:
+        return self.role_state.role == Role.CANDIDATE
+
+    @property
+    def is_follower(self) -> bool:
+        return self.role_state.role == Role.FOLLOWER
 
     @property
     def address(self) -> tuple[str, int]:

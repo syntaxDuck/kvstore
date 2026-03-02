@@ -1,6 +1,9 @@
 from dataclasses import dataclass
 from enum import Enum
-from typing import Callable
+from typing import Callable, TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from .types.types_node import NodeDetails
 
 
 class Role(str, Enum):
@@ -24,7 +27,6 @@ class RoleState:
 
     def become_leader(self):
         self.role = Role.LEADER
-        self.term += 1
         self.voted_for = None
         if self._on_become_leader:
             self._on_become_leader()
