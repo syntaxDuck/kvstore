@@ -17,35 +17,52 @@ KVStore is a distributed key-value store that provides:
 - **Term Validation**: All RPCs include term information for consistency
 - **Heartbeat**: Leader sends periodic heartbeats to maintain authority
 - **Vote Decision**: Followers vote based on term and log up-to-date check
+- **Timer Strategy Pattern**: Election and heartbeat use pluggable timer strategies
+
+### Timer Strategies
+
+The system uses the Strategy pattern for election and heartbeat timers:
+- `ElectionStrategy`: Manages election timeout and voting
+- `HeartbeatStrategy`: Manages leader heartbeat sending
+- `TimerTask`: Wrapper that manages asyncio task lifecycle
 
 ## Project Structure
 
 ```
 src/core/
-├── command.py           # (deprecated, use types/)
 ├── config.py            # Configuration settings
 ├── exceptions.py        # Custom exceptions
-├── key_value_store.py   # In-memory key-value store
-├── log.py               # Write-ahead log implementation
-├── logging.py           # Logging configuration
-├── node.py              # Node implementation with Raft consensus
-├── peer_client.py       # RPC client for peer communication
-├── protocol.py          # Wire protocol for messages
-├── role_state.py        # Role and term tracking
-├── rpc.py               # RPC dispatcher
-└── types/               # Type definitions
+├── logging.py          # Logging configuration
+├── peer_client.py      # RPC client for peer communication
+├── network/            # Network layer
+│   ├── __init__.py
+│   ├── protocol.py     # Wire protocol for messages
+│   └── rpc.py          # RPC dispatcher
+├── raft/               # Raft consensus implementation
+│   ├── __init__.py
+│   ├── election_strategy.py   # Election timer strategy
+│   ├── heartbeat_strategy.py   # Heartbeat timer strategy
+│   ├── key_value_store.py     # In-memory key-value store
+│   ├── log.py                 # Write-ahead log
+│   ├── node.py                # Node implementation
+│   ├── node_interface.py      # Node interface protocol
+│   └── role_state.py          # Role and term tracking
+├── types/              # Type definitions
+│   ├── __init__.py
+│   ├── types_command.py # Command type
+│   ├── types_log.py     # Log entry types
+│   ├── types_node.py    # NodeDetails
+│   └── types_rpc.py    # RpcRequest, RpcResponse
+└── util/               # Utilities
     ├── __init__.py
-    ├── types_command.py # Command type
-    ├── types_log.py     # Log entry types
-    ├── types_node.py    # NodeDetails
-    └── types_rpc.py     # RpcRequest, RpcResponse
+    └── timer.py         # Timer strategy pattern
 ```
 
 ## Usage
 
 ```python
 import asyncio
-from src.core.node import Node
+from src.core.raft.node import Node
 from src.core.types.types_rpc import RpcRequest
 from src.core.logging import setup_logging
 
@@ -66,7 +83,7 @@ async def main():
 
     # Send RPC
     response = await node1.peers[0].send_rpc(
-        RpcRequest.ping(node1.id, node1.role.value)
+        RpcRequest.ping(node1.id, node1.role)
     )
 
 asyncio.run(main())
