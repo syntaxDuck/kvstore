@@ -1,6 +1,7 @@
-from typing import Any
-from pydantic import BaseModel
 import json
+from typing import Any
+
+from pydantic import BaseModel
 
 
 class Command(BaseModel):

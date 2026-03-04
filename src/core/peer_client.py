@@ -1,9 +1,8 @@
 import asyncio
 
 from .logging import get_logger
-from .protocol import Protocol
-from .types import RpcRequest, RpcResponse, NodeDetails
-
+from .network.protocol import Protocol
+from .types import NodeDetails, RpcRequest, RpcResponse
 
 logger = get_logger(__name__)
 
@@ -12,19 +11,21 @@ class PeerClient:
     def __init__(
         self, peer_details: NodeDetails, protocol: Protocol = Protocol()
     ) -> None:
-        self.details: NodeDetails = peer_details
-        self.address = peer_details.address
+        self.node_id = peer_details.id
+        self.node_role = peer_details.role
+        self.address = (peer_details.host, peer_details.port)
         self._protocol = protocol
 
     @property
     def id(self):
-        return self.details.id
+        return self.node_id
 
     @property
     def role(self):
-        return self.details.role
+        return self.node_role
 
     async def send_rpc(self, message: RpcRequest) -> RpcResponse:
+        logger.debug(f"Sending {message.type} to peer {self.id} at {self.address}")
         try:
             reader, writer = await asyncio.open_connection(
                 self.address[0], self.address[1]
@@ -36,6 +37,9 @@ class PeerClient:
             writer.close()
             await writer.wait_closed()
 
+            logger.debug(
+                f"Received response from peer {self.id}: {response.get('status')}"
+            )
             return RpcResponse(**response)
         except ConnectionRefusedError:
             logger.error(f"Connection refused to peer {self.id}")

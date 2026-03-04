@@ -1,5 +1,6 @@
-from pydantic import BaseModel
 from typing import Any, Callable, Coroutine, TypeAlias
+
+from pydantic import BaseModel
 
 from . import Command
 

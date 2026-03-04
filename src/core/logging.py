@@ -1,6 +1,6 @@
 import logging
-from pathlib import Path
 import sys
+from pathlib import Path
 
 from .config import settings
 
@@ -29,6 +29,14 @@ def setup_logging():
 
     # Root logger level
     logging.root.setLevel(logging.DEBUG)
+
+    # Set per-module levels based on RPC_DEBUG setting
+    if settings.RPC_DEBUG:
+        logging.getLogger("src.core.rpc").setLevel(logging.DEBUG)
+        logging.getLogger("src.core.peer_client").setLevel(logging.DEBUG)
+    else:
+        logging.getLogger("src.core.rpc").setLevel(logging.INFO)
+        logging.getLogger("src.core.peer_client").setLevel(logging.INFO)
 
 
 def get_logger(name):
