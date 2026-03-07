@@ -2,7 +2,7 @@ import asyncio
 import json
 
 from src.core.logging import get_logger, setup_logging
-from src.core.node import Node
+from src.core.raft.node import Node
 from src.core.peer_client import PeerClient
 from src.core.types import Command, RpcRequest
 
@@ -140,7 +140,7 @@ async def handle_set(nodes: list[Node], parts: list[str]):
             return
 
         cmd = Command(op="SET", key=key, val=val)
-        request = RpcRequest.client_write(target.details, None, cmd)
+        request = RpcRequest.client_write(target.id, target.role.value, cmd=cmd)
         client = PeerClient(target.details)
         response = await client.send_rpc(request)
 
@@ -172,7 +172,7 @@ async def handle_get(nodes: list[Node], parts: list[str]):
             return
 
         cmd = Command(op="GET", key=key, val=None)
-        request = RpcRequest.client_get(target.details, None, cmd)
+        request = RpcRequest.client_get(target.id, target.role.value, cmd=cmd)
         client = PeerClient(target.details)
         response = await client.send_rpc(request)
         print(response)
@@ -204,7 +204,7 @@ async def handle_delete(nodes: list[Node], parts: list[str]):
             return
 
         cmd = Command(op="DELETE", key=key, val=None)
-        request = RpcRequest.client_write(target.details, None, cmd)
+        request = RpcRequest.client_write(target.id, target.role.value, cmd=cmd)
         client = PeerClient(target.details)
         response = await client.send_rpc(request)
 

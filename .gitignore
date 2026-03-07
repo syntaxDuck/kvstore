@@ -46,4 +46,4 @@ Thumbs.db
 
 # Project specific
 logs/
-store_log.kvs
+kvs_store*
