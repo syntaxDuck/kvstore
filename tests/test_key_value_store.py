@@ -1,6 +1,6 @@
 import pytest
 
-from src.core.key_value_store import KeyValueStore, KeyValueStoreResponse
+from src.core.raft.key_value_store import KeyValueStore, KeyValueStoreResponse
 from src.core.types import Command
 
 

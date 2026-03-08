@@ -3,7 +3,7 @@ import json
 import struct
 from typing import Any
 
-from ..logging import get_logger
+from src.core.logging import get_logger
 
 logger = get_logger(__name__)
 

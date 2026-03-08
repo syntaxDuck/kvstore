@@ -4,7 +4,7 @@ import struct
 import json
 from unittest.mock import AsyncMock, MagicMock
 
-from src.core.protocol import Protocol
+from src.rpc.protocol import Protocol
 
 
 class TestProtocol:

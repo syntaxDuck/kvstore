@@ -1,7 +1,7 @@
 import pytest
 
-from src.core.rpc import RpcRequest, RpcResponse, RpcDipatcher
-from src.core.types import Command
+from src.rpc.rpc import RpcDipatcher
+from src.core.types import Command, RpcRequest, RpcResponse
 
 
 class TestRpcRequest:

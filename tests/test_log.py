@@ -2,7 +2,7 @@ import pytest
 import tempfile
 from pathlib import Path
 
-from src.core.log import WriteAheadLog, WriteAheadLogResponse
+from src.core.raft.log import WriteAheadLog, WriteAheadLogResponse
 from src.core.types import Command
 from src.core.exceptions import LogError
 

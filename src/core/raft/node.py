@@ -5,9 +5,7 @@ import random
 from ..config import settings
 from ..exceptions import LogError
 from ..logging import get_logger
-from ..network.protocol import Protocol
-from ..network.rpc import RpcDipatcher
-from ..peer_client import PeerClient
+from ..peer_http_client import PeerHttpClient
 from ..types import (
     Command,
     LogDetails,
@@ -74,16 +72,8 @@ class Node:
 
         self.log = WriteAheadLog(f"kvs_store_{self.id}", path=data_dir)
         self.store = KeyValueStore()
-        self.protocol = Protocol()
 
-        self.rpc = RpcDipatcher()
-        self.rpc.register("PING", self._handle_ping)
-        self.rpc.register("CLIENT_WRITE", self._handle_client_write)
-        self.rpc.register("CLIENT_GET", self._handle_client_get)
-        self.rpc.register("APPEND_ENTRY", self._handle_append_entry)
-        self.rpc.register("REQUEST_VOTE", self._handle_vote_request)
-
-        self.peers: list[PeerClient] = []
+        self.peers: list[PeerHttpClient] = []
 
         logger.info(f"Node initialized: {self.details}")
 
@@ -255,49 +245,6 @@ class Node:
                 self.id, self.role, {"Error": "Issue validating log"}
             )
 
-    # SERVER
-    ########################################################################
-    async def handle_connection(
-        self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-        try:
-            msg = await self.protocol.recv_message(reader)
-            req = RpcRequest(**msg)
-
-            if req.node_role == Role.LEADER and self.log.details.term != req.term:
-                self.role_state.voted_for = None
-            res = await self.rpc.dispatch(req)
-            await self.protocol.send_message(writer, res.model_dump())
-
-        except ConnectionError as e:
-            logger.warning(f"Connection error handling request: {e}")
-            res = RpcResponse.err(self.id, self.role, {"Error": "Connection error"})
-            await self.protocol.send_message(writer, res.model_dump())
-        except ValueError as e:
-            logger.warning(f"Invalid request: {e}")
-            res = RpcResponse.err(self.id, self.role, {"Error": str(e)})
-            await self.protocol.send_message(writer, res.model_dump())
-        except Exception as e:
-            logger.error(f"Unexpected error handling connection: {e}")
-            res = RpcResponse.err(
-                self.id, self.role, {"Error": "Internal server error"}
-            )
-            await self.protocol.send_message(writer, res.model_dump())
-        finally:
-            writer.close()
-            await writer.wait_closed()
-
-    async def start_rpc_server(self) -> None:
-        server = await asyncio.start_server(
-            self.handle_connection, self.host, self.port
-        )
-
-        logger.info(f"Node {self.id} listening on {self.host}:{self.port}")
-
-        self.election_task.start()
-        async with server:
-            await server.serve_forever()
-
     # PEER METHODS
     ############################################################################
     async def send_to_all_peers(self, request: RpcRequest) -> list[RpcResponse]:
@@ -309,8 +256,41 @@ class Node:
             try:
                 responses.append(await peer.send_rpc(request))
             except (ConnectionError, TimeoutError, OSError) as e:
-                logger.warning(f"Failed to send rpc to peer {peer.id}: {e}")
+                logger.warning(f"Failed to send rpc to peer {peer.id}: %s", e)
                 responses.append(RpcResponse.err(peer.id, peer.role, {"Error": str(e)}))
+
+        return responses
+
+    async def send_to_all_peers_from_http(
+        self, cmd: Command, term: int, last_log_index: int, last_log_term: int
+    ) -> list[dict]:
+        """Send command to all peers for replication via HTTP."""
+        if len(self.peers) == 0:
+            return []
+
+        import aiohttp
+
+        responses = []
+        for peer in self.peers:
+            try:
+                async with aiohttp.ClientSession() as session:
+                    params = {
+                        "leader_id": self.id,
+                        "term": term,
+                        "prev_log_index": last_log_index,
+                        "prev_log_term": last_log_term,
+                    }
+                    payload = cmd.model_dump() if hasattr(cmd, "model_dump") else cmd
+                    async with session.post(
+                        f"{peer.base_url}/internal/v1/append",
+                        params=params,
+                        json=[payload],
+                    ) as resp:
+                        data = await resp.json()
+                        responses.append(data)
+            except Exception as e:
+                logger.warning(f"Failed to send to peer {peer.id}: %s", e)
+                responses.append({"status": "ERROR", "Error": str(e)})
 
         return responses
 
@@ -332,7 +312,7 @@ class Node:
 
     async def register_peer(self, peer_details: NodeDetails) -> None:
         logger.info(f"Registering peer: {peer_details}")
-        peer = PeerClient(peer_details)
+        peer = PeerHttpClient(peer_details)
         res = await peer.send_rpc(
             RpcRequest.ping(
                 self.id,

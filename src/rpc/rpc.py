@@ -1,5 +1,5 @@
-from ..core.logging import get_logger
-from ..types import RpcCoroutine, RpcRequest, RpcResponse
+from src.core.logging import get_logger
+from src.core.types import RpcCoroutine, RpcRequest, RpcResponse
 
 logger = get_logger(__name__)
 
