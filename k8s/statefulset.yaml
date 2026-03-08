@@ -1,0 +1,84 @@
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: kvstore
+  namespace: kvstore
+spec:
+  serviceName: kvstore
+  replicas: 3
+  podManagementPolicy: Parallel
+  selector:
+    matchLabels:
+      app: kvstore
+  template:
+    metadata:
+      labels:
+        app: kvstore
+        kvstore-role: follower
+    spec:
+      serviceAccountName: kvstore
+      containers:
+        - name: kvstore
+          image: kvstore:latest
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: rpc
+              containerPort: 5003
+              protocol: TCP
+            - name: health
+              containerPort: 8080
+              protocol: TCP
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: NODE_PORT
+              value: "5003"
+            - name: NODE_HOST
+              value: "0.0.0.0"
+            - name: CLUSTER_SIZE
+              valueFrom:
+                configMapKeyRef:
+                  name: kvstore-config
+                  key: CLUSTER_SIZE
+            - name: SERVICE_NAME
+              valueFrom:
+                configMapKeyRef:
+                  name: kvstore-config
+                  key: SERVICE_NAME
+            - name: NAMESPACE
+              valueFrom:
+                configMapKeyRef:
+                  name: kvstore-config
+                  key: NAMESPACE
+            - name: PEER_DISCOVERY_TIMEOUT
+              valueFrom:
+                configMapKeyRef:
+                  name: kvstore-config
+                  key: PEER_DISCOVERY_TIMEOUT
+            - name: DATA_DIR
+              value: "/app/data"
+          volumeMounts:
+            - name: data
+              mountPath: /app/data
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 10
+          readinessProbe:
+            httpGet:
+              path: /ready
+              port: 8080
+            initialDelaySeconds: 15
+            periodSeconds: 5
+  volumeClaimTemplates:
+    - metadata:
+        name: data
+      spec:
+        accessModes: ["ReadWriteOnce"]
+        resources:
+          requests:
+            storage: 1Gi

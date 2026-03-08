@@ -1,4 +1,4 @@
-from ..logging import get_logger
+from ..core.logging import get_logger
 from ..types import RpcCoroutine, RpcRequest, RpcResponse
 
 logger = get_logger(__name__)

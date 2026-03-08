@@ -1,6 +1,8 @@
 import asyncio
+import functools
 import random
 
+from ..config import settings
 from ..exceptions import LogError
 from ..logging import get_logger
 from ..network.protocol import Protocol
@@ -20,6 +22,19 @@ from .key_value_store import KeyValueStore
 from .log import WriteAheadLog
 from .role_state import Role, RoleState
 
+ROLE_LABEL_KEY = "kvstore-role"
+ROLE_LABEL_LEADER = "leader"
+ROLE_LABEL_FOLLOWER = "follower"
+
+
+try:
+    from kubernetes import client as k8s_client, config as k8s_config
+    from kubernetes.client import ApiException
+except ImportError:  # pragma: no cover - optional dep
+    k8s_client = None
+    k8s_config = None
+    ApiException = None
+
 logger = get_logger(__name__)
 
 DEFAULT_ELECTION_TIMEOUT_MAX = 2.0
@@ -33,6 +48,7 @@ class Node:
         id: int,
         port: int = 0,
         host: str = "0.0.0.0",
+        data_dir: str = ".",
     ) -> None:
         self.id = id
         self.port = port
@@ -44,6 +60,11 @@ class Node:
             ),
         )
 
+        self.pod_name = settings.POD_NAME
+        self.namespace = settings.NAMESPACE
+        self._k8s_api = None
+        self._k8s_config_loaded = False
+
         self.election_task = TimerTask(ElectionStrategy(self))
         self.heartbeat_task = TimerTask(HeartbeatStrategy(self))
 
@@ -51,7 +72,7 @@ class Node:
         self.role_state._on_become_follower = self._step_down
         self.role_state._on_become_candidate = self._step_down
 
-        self.log = WriteAheadLog(f"kvs_store_{self.id}")
+        self.log = WriteAheadLog(f"kvs_store_{self.id}", path=data_dir)
         self.store = KeyValueStore()
         self.protocol = Protocol()
 
@@ -66,15 +87,79 @@ class Node:
 
         logger.info(f"Node initialized: {self.details}")
 
+        self._schedule_role_label(ROLE_LABEL_FOLLOWER)
+
     # STATE CHANGE METHODS
     ############################################################################
     def _become_leader(self) -> None:
         self.election_task.stop()
         self.heartbeat_task.start()
 
+        self._schedule_role_label(ROLE_LABEL_LEADER)
+
     def _step_down(self) -> None:
         self.heartbeat_task.stop()
         self.election_task.start()
+
+        self._schedule_role_label(ROLE_LABEL_FOLLOWER)
+
+    # K8S
+    ############################################################################
+    def _schedule_role_label(self, label: str) -> None:
+        if not self.pod_name:
+            return
+        try:
+            asyncio.create_task(self._patch_role_label(label))
+        except RuntimeError:
+            logger.debug("Event loop unavailable; skipping label patch (%s)", label)
+
+    async def _get_k8s_api(self):
+        if (
+            not self.pod_name
+            or not self.namespace
+            or k8s_client is None
+            or k8s_config is None
+        ):
+            return None
+
+        if self._k8s_api:
+            return self._k8s_api
+
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(None, k8s_config.load_incluster_config)
+            self._k8s_config_loaded = True
+            self._k8s_api = k8s_client.CoreV1Api()
+            return self._k8s_api
+        except Exception as exc:  # pragma: no cover - best effort
+            logger.warning("Failed to load in-cluster config: %s", exc)
+            return None
+
+    async def _patch_role_label(self, label_value: str) -> None:
+        api = await self._get_k8s_api()
+        if api is None:
+            return
+
+        body = {"metadata": {"labels": {ROLE_LABEL_KEY: label_value}}}
+        loop = asyncio.get_running_loop()
+        try:
+            await loop.run_in_executor(
+                None,
+                functools.partial(
+                    api.patch_namespaced_pod,
+                    self.pod_name,
+                    self.namespace,
+                    body,
+                ),
+            )
+            logger.info(
+                "Patched pod %s label %s=%s",
+                self.pod_name,
+                ROLE_LABEL_KEY,
+                label_value,
+            )
+        except Exception as exc:
+            logger.warning("Unable to patch pod label: %s", exc)
 
     # RPC HANDLER METHODS
     ############################################################################
@@ -202,7 +287,7 @@ class Node:
             writer.close()
             await writer.wait_closed()
 
-    async def start_server(self) -> None:
+    async def start_rpc_server(self) -> None:
         server = await asyncio.start_server(
             self.handle_connection, self.host, self.port
         )

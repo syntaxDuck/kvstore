@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: kvstore-config
+  namespace: kvstore
+data:
+  CLUSTER_SIZE: "3"
+  NODE_PORT: "5003"
+  SERVICE_NAME: "kvstore"
+  NAMESPACE: "kvstore"
+  PEER_DISCOVERY_TIMEOUT: "30"

@@ -7,6 +7,9 @@ requires-python = ">=3.13"
 dependencies = [
     "pydantic>=2.12.5",
     "pydantic-settings>=2.13.1",
+    "aiohttp>=3.11.0",
+    "kubernetes>=34.0.0",
     "pytest>=9.0.2",
     "pytest-asyncio>=0.24.0",
+    "fastapi>=0.135.1",
 ]

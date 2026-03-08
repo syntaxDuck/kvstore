@@ -22,6 +22,9 @@ class NodeInterface(Protocol):
     def is_follower(self) -> bool: ...
 
     @property
+    def is_candidate(self) -> bool: ...
+
+    @property
     def role_state(self) -> RoleState: ...
 
     @property

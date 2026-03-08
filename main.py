@@ -1,234 +1,180 @@
 import asyncio
-import json
+from aiohttp import web
 
+from src.core.config import settings
 from src.core.logging import get_logger, setup_logging
 from src.core.raft.node import Node
-from src.core.peer_client import PeerClient
-from src.core.types import Command, RpcRequest
+from src.core.types import NodeDetails
 
 
 setup_logging()
 logger = get_logger(__name__)
 
+node: Node | None = None
+is_ready = False
 
-def parse_value(s: str):
-    """Try to parse as JSON, fall back to string."""
-    try:
-        return json.loads(s)
-    except json.JSONDecodeError:
-        return s
+
+def get_ordinal_from_pod_name(pod_name: str) -> int:
+    if "-" in pod_name:
+        try:
+            return int(pod_name.rsplit("-", 1)[1])
+        except (ValueError, IndexError):
+            pass
+    return 0
+
+
+def compute_peer_addresses() -> list[tuple[str, int]]:
+    peers = []
+    cluster_size = settings.CLUSTER_SIZE
+    service_name = settings.SERVICE_NAME
+    namespace = settings.NAMESPACE
+    port = settings.NODE_PORT
+
+    pod_ordinal = get_ordinal_from_pod_name(settings.POD_NAME)
+
+    for i in range(cluster_size):
+        if i == pod_ordinal:
+            continue
+        # DNS: kvstore-1.kvstore.svc.cluster.local (service.namespace.svc.cluster.local)
+        hostname = f"{service_name}-{i}.{service_name}.{namespace}.svc.cluster.local"
+        peers.append((hostname, port))
+
+    return peers
+
+
+async def discover_and_register_peers(node: Node) -> bool:
+    global is_ready
+
+    peer_addresses = compute_peer_addresses()
+    logger.info(f"Node {node.id}: Discovering peers: {peer_addresses}")
+
+    timeout = settings.PEER_DISCOVERY_TIMEOUT
+    start_time = asyncio.get_event_loop().time()
+
+    while asyncio.get_event_loop().time() - start_time < timeout:
+        registered = 0
+        for host, port in peer_addresses:
+            peer_ordinal = int(host.split("-")[1].split(".")[0])
+            try:
+                peer_details = NodeDetails(
+                    id=peer_ordinal,
+                    role="follower",
+                    host=host,
+                    port=port,
+                )
+                await node.register_peer(peer_details)
+                registered += 1
+                logger.info(
+                    f"Node {node.id}: Registered peer {peer_ordinal} at {host}:{port}"
+                )
+            except Exception as e:
+                logger.warning(
+                    f"Node {node.id}: Failed to register peer {host}:{port}: {e}"
+                )
+
+        if registered >= len(peer_addresses):
+            logger.info(
+                f"Node {node.id}: Successfully registered all {registered} peers"
+            )
+            is_ready = True
+            return True
+
+        await asyncio.sleep(2)
+
+    logger.warning(
+        f"Node {node.id}: Peer discovery timeout, registered {len(node.peers)}/{len(peer_addresses)} peers"
+    )
+    # Mark ready even with partial peers - cluster can still function
+    if len(node.peers) > 0:
+        is_ready = True
+        return True
+
+    return False
+
+
+async def health_handler(request):
+    return web.Response(text="OK", status=200)
+
+
+async def ready_handler(request):
+    global is_ready
+
+    # Ready if RPC server is running (node is not None)
+    if node is not None:
+        return web.Response(text="Ready", status=200)
+
+    return web.Response(text="Not Ready", status=503)
+
+
+async def leader_handler(request):
+    global node
+
+    if node is None:
+        return web.Response(text="No node", status=503)
+
+    if node.is_leader:
+        return web.Response(text=str(node.id), status=200)
+
+    # Not leader, check if we know who the leader is
+    leader_addr = node.leader_address
+    if leader_addr:
+        # Can't easily get leader's ID from address, so return redirect info
+        return web.Response(
+            text=f"redirect:{leader_addr[0]}:{leader_addr[1]}", status=200
+        )
+
+    return web.Response(text="unknown", status=200)
 
 
 async def main():
-    node1 = Node(1, port=5003)
-    node2 = Node(2, port=5004)
-    node3 = Node(3, port=5005)
+    global node, is_ready
 
-    nodes = [node1, node2, node3]
+    logger.info("Starting KVStore node with config:")
+    logger.info(f"  NODE_ID: {settings.NODE_ID}")
+    logger.info(f"  NODE_PORT: {settings.NODE_PORT}")
+    logger.info(f"  POD_NAME: {settings.POD_NAME}")
+    logger.info(f"  CLUSTER_SIZE: {settings.CLUSTER_SIZE}")
+    logger.info(f"  SERVICE_NAME: {settings.SERVICE_NAME}")
+    logger.info(f"  NAMESPACE: {settings.NAMESPACE}")
+    logger.info(f"  DATA_DIR: {settings.DATA_DIR}")
 
-    for node in nodes:
-        asyncio.create_task(node.start_server())
+    node = Node(
+        id=settings.NODE_ID,
+        port=settings.NODE_PORT,
+        host=settings.NODE_HOST,
+        data_dir=settings.DATA_DIR,
+    )
 
+    asyncio.create_task(node.start_rpc_server())
+
+    await asyncio.sleep(0.5)
+
+    # Start peer discovery in background
+    asyncio.create_task(discover_and_register_peers(node))
+
+    # Set ready after brief delay (RPC server is up)
     await asyncio.sleep(1)
+    is_ready = True
 
-    for node in nodes:
-        await node.register_peers([n.details for n in nodes])
+    # Set up health HTTP server using AppRunner (not run_app to avoid event loop conflict)
+    app = web.Application()
+    app.router.add_get("/health", health_handler)
+    app.router.add_get("/ready", ready_handler)
+    app.router.add_get("/leader", leader_handler)
 
-    await asyncio.sleep(2)
+    runner = web.AppRunner(app)
+    await runner.setup()
+    site = web.TCPSite(runner, "0.0.0.0", 8080)
+    await site.start()
 
-    await console_loop(nodes)
+    logger.info(f"Node {node.id}: Started. Health endpoint on port 8080")
 
-
-async def console_loop(nodes: list[Node]):
-    running = True
-
-    while running:
-        try:
-            loop = asyncio.get_running_loop()
-            line = await loop.run_in_executor(None, input, "Cmd: ")
-
-            if not line:  # Handle empty input
-                continue
-
-            parts = line.split()
-            if not parts or not parts[0]:
-                continue
-
-            cmd = parts[0].lower()
-
-            if cmd == "help":
-                print_help()
-
-            elif cmd == "status":
-                print_status(nodes)
-
-            elif cmd == "quit" or cmd == "exit":
-                running = False
-
-            elif cmd == "set":
-                await handle_set(nodes, parts)
-
-            elif cmd == "get":
-                await handle_get(nodes, parts)
-
-            elif cmd == "delete":
-                await handle_delete(nodes, parts)
-
-            else:
-                print(f"Unknown command: {cmd}. Type 'help' for available commands.")
-
-        except KeyboardInterrupt:
-            running = False
-        except (EOFError, OSError):
-            running = False
-        except Exception as e:
-            logger.error(f"Error in console loop: {e}")
-
-    print("Shutting down...")
+    # Run forever
+    await asyncio.Event().wait()
 
 
-def print_help():
-    print("""
-Available commands:
-  set <key> <value> [node_id] - Set a value (defaults to leader)
-  get <key> [node_id]         - Get a value
-  delete <key> [node_id]      - Delete a key
-  status                      - Show status of all nodes
-  help                       - Show this help
-  quit                       - Exit
+if __name__ == "__main__":
+    if settings.POD_NAME:
+        settings.NODE_ID = get_ordinal_from_pod_name(settings.POD_NAME)
 
-Examples:
-  set foo bar 1          - Set foo=bar on node 1
-  set foo bar            - Set foo=bar on leader
-  set nums [1,2,3]      - Set nums=[1,2,3] on leader  
-  set data {"x":"y"}    - Set data={...} on leader
-  get foo 2              - Get foo from node 2
-  status                 - Show all node statuses
-""")
-
-
-def print_status(nodes: list[Node]):
-    print("\nNode Status:")
-    print("-" * 50)
-    for node in nodes:
-        print(f"Node {node.id}:")
-        print(f"  Role: {node.role}")
-        print(f"  Term: {node.role_state.term}")
-        print(f"  Peers: {len(node.peers)}")
-        print(f"  Store: {node.store.value_store}")
-    print()
-
-
-async def handle_set(nodes: list[Node], parts: list[str]):
-    if len(parts) < 3:
-        print("Usage: set <key> <value> [node_id]")
-        return
-
-    try:
-        print(parts)
-        key = parts[1]
-        val = parse_value(parts[2])
-
-        # Last arg is target_id if it's a number
-        target_id = None
-        if len(parts) > 3 and parts[-1].isdigit():
-            target_id = int(parts[-1])
-
-        target = find_node(nodes, target_id) if target_id else find_leader(nodes)
-        if not target:
-            print("No leader found!")
-            return
-
-        cmd = Command(op="SET", key=key, val=val)
-        request = RpcRequest.client_write(target.id, target.role.value, cmd=cmd)
-        client = PeerClient(target.details)
-        response = await client.send_rpc(request)
-
-        if response.is_ok:
-            print(f"OK - Set {key} = {val}")
-        else:
-            print(f"Error: {response.payload}")
-
-    except (ValueError, IndexError) as e:
-        print(f"Invalid input: {e}")
-
-
-async def handle_get(nodes: list[Node], parts: list[str]):
-    if len(parts) < 2:
-        print("Usage: get <key> [node_id]")
-        return
-
-    try:
-        key = parts[1]
-
-        # Last arg is target_id if it's a number
-        target_id = None
-        if len(parts) > 2 and parts[-1].isdigit():
-            target_id = int(parts[-1])
-
-        target = find_node(nodes, target_id) if target_id else find_leader(nodes)
-        if not target:
-            print("No leader found!")
-            return
-
-        cmd = Command(op="GET", key=key, val=None)
-        request = RpcRequest.client_get(target.id, target.role.value, cmd=cmd)
-        client = PeerClient(target.details)
-        response = await client.send_rpc(request)
-        print(response)
-        if response.is_ok and response.payload:
-            print(f"{key} = {response.payload['val']}")
-        else:
-            print(f"Key not found: {key}")
-
-    except (ValueError, IndexError) as e:
-        print(f"Invalid input: {e}")
-
-
-async def handle_delete(nodes: list[Node], parts: list[str]):
-    if len(parts) < 2:
-        print("Usage: delete <key> [node_id]")
-        return
-
-    try:
-        key = parts[1]
-
-        # Last arg is target_id if it's a number
-        target_id = None
-        if len(parts) > 2 and parts[-1].isdigit():
-            target_id = int(parts[-1])
-
-        target = find_node(nodes, target_id) if target_id else find_leader(nodes)
-        if not target:
-            print("No leader found!")
-            return
-
-        cmd = Command(op="DELETE", key=key, val=None)
-        request = RpcRequest.client_write(target.id, target.role.value, cmd=cmd)
-        client = PeerClient(target.details)
-        response = await client.send_rpc(request)
-
-        if response.is_ok:
-            print(f"OK - Deleted {key}")
-        else:
-            print(f"Error: {response.payload}")
-
-    except (ValueError, IndexError) as e:
-        print(f"Invalid input: {e}")
-
-
-def find_node(nodes: list[Node], node_id: int) -> Node | None:
-    for node in nodes:
-        if node.id == node_id:
-            return node
-    return None
-
-
-def find_leader(nodes: list[Node]) -> Node | None:
-    for node in nodes:
-        if node.is_leader:
-            return node
-    return nodes[0] if nodes else None
-
-
-asyncio.run(main())
+    asyncio.run(main())

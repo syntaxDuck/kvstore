@@ -8,6 +8,8 @@ RUN pip install uv && uv pip install --system -r pyproject.toml
 COPY src/ src/
 COPY main.py .
 
-EXPOSE 5003
+RUN mkdir -p /app/data
+
+EXPOSE 5003 8080
 
 CMD ["python", "main.py"]

@@ -31,7 +31,7 @@ class ElectionStrategy(TimerStrategy):
                 self._election_reset = False
                 continue
 
-            if self._node.is_follower:
+            if self._node.is_follower or self._node.is_candidate:
                 await self._start_election()
 
     async def _start_election(self):
@@ -39,19 +39,22 @@ class ElectionStrategy(TimerStrategy):
 
         self._node.role_state.become_candidate(self._node.id)
 
-        ballots = await self._node.send_to_all_peers(
-            RpcRequest.request_vote(
-                self._node.id,
-                self._node.role,
-                self._node.term,
-                self._node.log_details.index,
-                self._node.log_details.term,
+        try:
+            ballots = await self._node.send_to_all_peers(
+                RpcRequest.request_vote(
+                    self._node.id,
+                    self._node.role,
+                    self._node.term,
+                    self._node.log_details.index,
+                    self._node.log_details.term,
+                )
             )
-        )
+        except ValueError:
+            return
 
         yeahs = nahs = 0
         for ballot in ballots:
-            logger.debug(f"Election ballot for term {self._node.term}: {ballot}")
+            logger.info(f"Election ballot for term {self._node.term}: {ballot}")
             if not ballot.is_ok or not ballot.payload:
                 continue
             if ballot.payload.get("vote"):
