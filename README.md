@@ -155,4 +155,6 @@ uv run pytest -q --cov --cov-report=term-missing
 
 Coverage guardrail: CI enforces a minimum of 85% on `src/core/raft` plus `src/core/peer_http_client.py`.
 
+CI also runs a 3-node integration smoke check (`scripts/ci_smoke.sh`) validating ready + leader write/read flow.
+
 To block PR merges on failure, set branch protection on `main` and require the `CI / Test, Lint, Type` status check.

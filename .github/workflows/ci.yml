@@ -38,3 +38,6 @@ jobs:
 
       - name: Run tests with coverage guardrails
         run: uv run pytest -q --cov --cov-report=term-missing
+
+      - name: Integration smoke test (3-node cluster)
+        run: bash scripts/ci_smoke.sh
