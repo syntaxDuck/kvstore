@@ -226,13 +226,16 @@ class Node:
         )
 
         follower_acks = 0
+        acked_peer_ids: list[int] = []
         for res in responses:
             if res.status == "ACK":
                 follower_acks += 1
-                self.update_match_index(res.node_id, next_index)
+                acked_peer_ids.append(res.node_id)
 
         if self._has_majority(follower_acks):
             self.log.append(self.role_state.term, cmd)
+            for peer_id in acked_peer_ids:
+                self.match_index[peer_id] = next_index
             self.match_index[self.id] = self.log.details.index
             self._update_commit_index()
             return RpcResponse.ok(
