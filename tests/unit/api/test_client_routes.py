@@ -5,6 +5,7 @@ import pytest
 from fastapi import HTTPException
 
 from src.api.routes.client import KvSetRequest, delete_value, set_value
+from src.api.schemas.client import KvSetRequest as SchemaKvSetRequest
 from src.core.types import RpcResponse
 
 
@@ -37,6 +38,10 @@ def _leader_node():
     node.update_match_index = Mock()
     node._update_commit_index = Mock()
     return node
+
+
+def test_kv_set_request_route_reexport_matches_schema_type():
+    assert KvSetRequest is SchemaKvSetRequest
 
 
 @pytest.mark.asyncio

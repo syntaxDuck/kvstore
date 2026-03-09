@@ -1,4 +1,3 @@
-import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException
@@ -8,6 +7,7 @@ from ...core.logging import get_logger
 from ...core.metrics import get_metrics
 from ...core.types import Command
 from ...core.raft.role_state import Role
+from ..services import collect_peer_readiness
 
 logger = get_logger(__name__)
 
@@ -44,28 +44,8 @@ async def ready_check(request: Request) -> dict[str, Any]:
     if node.last_applied > node.commit_index:
         issues.append("last_applied_ahead_of_commit")
 
-    reachable_peers = 0
-    peer_errors: list[str] = []
-    max_parallel_pings = max(1, min(len(node.peers), 10))
-    ping_semaphore = asyncio.Semaphore(max_parallel_pings)
-
-    async def ping_peer(peer) -> tuple[int, bool, Any]:
-        async with ping_semaphore:
-            try:
-                timeout = max(settings.RPC_HTTP_TOTAL_TIMEOUT_SEC, 0.1)
-                res = await asyncio.wait_for(peer.ping(), timeout=timeout)
-                if res.is_ok:
-                    return peer.id, True, None
-                return peer.id, False, res.payload
-            except Exception as exc:
-                return peer.id, False, str(exc)
-
-    ping_results = await asyncio.gather(*(ping_peer(peer) for peer in node.peers))
-    for peer_id, is_ok, err in ping_results:
-        if is_ok:
-            reachable_peers += 1
-        else:
-            peer_errors.append(f"peer_{peer_id}:{err}")
+    timeout = max(settings.RPC_HTTP_TOTAL_TIMEOUT_SEC, 0.1)
+    reachable_peers, peer_errors = await collect_peer_readiness(node.peers, timeout)
 
     total_nodes = len(node.peers) + 1
     quorum = total_nodes // 2 + 1

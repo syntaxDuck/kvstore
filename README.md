@@ -47,6 +47,13 @@ The system now uses HTTP for both client requests and inter-node coordination.
 - `src/api/main.py`: FastAPI app assembly and middleware
 - `src/api/routes/`: route handlers (`client`, `internal`, `node`)
 
+## Project Layout
+
+- `src/api/`: HTTP layer (`routes/`, request `schemas/`, shared route `services/`)
+- `src/core/`: Raft + transport + metrics internals
+- `tests/unit/`: unit-level coverage by subsystem (`api/`, `core/`, `rpc/`)
+- `tests/integration/`: multi-node and durability/regression scenarios
+
 ## Running Locally
 
 ### 1) Install dependencies
@@ -79,7 +86,7 @@ uv run pytest -q
 
 Large-log recovery baseline test:
 ```bash
-uv run pytest -q -s tests/test_large_log_recovery.py
+uv run pytest -q -s tests/integration/test_large_log_recovery.py
 ```
 
 Latest local measurement (March 9, 2026):  
