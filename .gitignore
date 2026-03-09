@@ -47,3 +47,5 @@ Thumbs.db
 # Project specific
 logs/
 kvs_store*
+.ci-smoke-logs/
+data/ci-smoke/
