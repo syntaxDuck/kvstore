@@ -73,6 +73,14 @@ uv run pytest -q
 
 (Current baseline: full suite passes.)
 
+Large-log recovery baseline test:
+```bash
+uv run pytest -q -s tests/test_large_log_recovery.py
+```
+
+Latest local measurement (March 9, 2026):  
+`RECOVERY_BASELINE_NO_SNAPSHOT entries=3000 seconds=0.044`
+
 ## Configuration
 
 Environment variables are defined in `src/core/config.py`.
