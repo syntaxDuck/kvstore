@@ -368,6 +368,26 @@ class Node:
 
         logger.warning(f"Failed to register peer: {peer}")
 
+    async def close_peer_sessions(self) -> None:
+        for peer in self.peers:
+            try:
+                await peer.close()
+            except Exception as exc:  # pragma: no cover - best effort cleanup
+                logger.warning(
+                    "Failed closing peer session: node=%s peer=%s err=%s",
+                    self.id,
+                    peer.id,
+                    exc,
+                )
+
+    async def shutdown(self) -> None:
+        logger.info("Node %s shutdown started", self.id)
+        self.heartbeat_task.stop()
+        self.election_task.stop()
+        await self.close_peer_sessions()
+        self.log.close()
+        logger.info("Node %s shutdown complete", self.id)
+
     # Utility
     ###########################################################################
     def get_vote_decision(

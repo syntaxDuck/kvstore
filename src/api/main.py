@@ -31,10 +31,16 @@ class MetricsMiddleware(BaseHTTPMiddleware):
 
 
 @asynccontextmanager
-async def lifespan(_: FastAPI):
+async def lifespan(app: FastAPI):
     """Application lifespan manager for connection pool cleanup."""
     logger.info("Application starting up...")
     yield
+    node = getattr(app.state, "node", None)
+    if node is not None:
+        if hasattr(node, "shutdown"):
+            await node.shutdown()
+        elif hasattr(node, "close_peer_sessions"):
+            await node.close_peer_sessions()
     logger.info("Application shutting down...")
 
 

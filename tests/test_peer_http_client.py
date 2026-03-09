@@ -92,3 +92,13 @@ async def test_peer_rpc_metrics_recorded(peer_client):
     assert res.is_ok is True
     all_metrics = metrics.get_all_metrics()
     assert all_metrics["peer_rpc.ping.count.ok"]["count"] == 1
+
+
+@pytest.mark.asyncio
+async def test_close_closes_underlying_http_session(peer_client):
+    session = await peer_client._get_session()
+    assert session.closed is False
+
+    await peer_client.close()
+
+    assert session.closed is True
