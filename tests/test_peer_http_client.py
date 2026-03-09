@@ -9,6 +9,7 @@ from src.core.types import Command, NodeDetails, RpcRequest
 
 @pytest.fixture
 def peer_client():
+    get_metrics().reset()
     peer = NodeDetails(id=2, role="FOLLOWER", host="127.0.0.1", port=5004)
     return PeerHttpClient(peer)
 
@@ -65,6 +66,9 @@ async def test_non_idempotent_rpc_does_not_retry(peer_client):
     assert res.payload["category"] == "transport_error"
     assert calls["count"] == 1
 
+    metrics = get_metrics().get_all_metrics()
+    assert metrics["peer_rpc.client_write.count.transport_error"]["count"] == 1
+
 
 @pytest.mark.asyncio
 async def test_unknown_message_type_returns_structured_error(peer_client):
@@ -74,6 +78,43 @@ async def test_unknown_message_type_returns_structured_error(peer_client):
     assert res.is_err is True
     assert res.payload["category"] == "request_build_error"
     assert res.payload["rpc_type"] == "BOGUS"
+
+
+@pytest.mark.asyncio
+async def test_retry_logs_include_diagnostic_context(peer_client, caplog):
+    calls = {"count": 0}
+
+    async def fail_then_succeed(endpoint, params=None, payload=None):
+        calls["count"] += 1
+        if calls["count"] == 1:
+            raise asyncio.TimeoutError("timed out")
+        return {"success": True}
+
+    async def no_sleep(attempt):
+        return None
+
+    peer_client._request_once = fail_then_succeed
+    peer_client._sleep_for_retry = no_sleep
+
+    req = RpcRequest.heartbeat(
+        node_id=1,
+        node_role="LEADER",
+        term=8,
+        last_log_index=10,
+        last_log_term=8,
+        commit_index=10,
+    )
+    with caplog.at_level("WARNING"):
+        await peer_client.send_rpc(req)
+
+    log_text = "\n".join(caplog.messages)
+    assert "peer_rpc_retry" in log_text
+    assert "node_id=1" in log_text
+    assert "peer_id=2" in log_text
+    assert "rpc_type=HEARTBEAT" in log_text
+    assert "attempt=1" in log_text
+    assert "term=8" in log_text
+    assert "category=transport_error" in log_text
 
 
 @pytest.mark.asyncio

@@ -110,3 +110,21 @@ Environment variables are defined in `src/core/config.py`.
 - `CORS_ORIGINS`
 - `CORS_ALLOW_METHODS`
 - `CORS_ALLOW_HEADERS`
+
+## Incident Triage (Election/Replication)
+
+When investigating cluster instability, use structured peer-RPC diagnostics:
+
+- Log keys (failure/retry): `node_id`, `peer_id`, `rpc_type`, `attempt`, `term`, `category`
+- Categories: `transport_error`, `http_error`, `decode_error`, `unexpected_error`
+- Metrics counters by category:
+  - `peer_rpc.<rpc_type>.count.ok`
+  - `peer_rpc.<rpc_type>.count.transport_error`
+  - `peer_rpc.<rpc_type>.count.http_error`
+  - `peer_rpc.<rpc_type>.count.decode_error`
+  - `peer_rpc.<rpc_type>.count.unexpected_error`
+
+Recommended first checks:
+1. `GET /internal/v1/metrics` and compare failure counters by RPC type.
+2. Search logs for `peer_rpc_failure` and `peer_rpc_retry`.
+3. Correlate `term` + `rpc_type=REQUEST_VOTE|APPEND_ENTRY|HEARTBEAT` for election/replication issues.

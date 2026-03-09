@@ -194,15 +194,25 @@ class PeerHttpClient:
                 retryable = exc.status >= 500
                 if self._should_retry(message.type) and retryable and attempt < max_attempts:
                     logger.warning(
-                        "Peer RPC failed (http status=%s), retrying attempt %s/%s: peer=%s rpc=%s",
-                        exc.status,
-                        attempt,
-                        max_attempts,
+                        "peer_rpc_retry node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=http_error status=%s",
+                        message.node_id,
                         self.id,
                         message.type,
+                        attempt,
+                        message.term,
+                        exc.status,
                     )
                     await self._sleep_for_retry(attempt)
                     continue
+                logger.error(
+                    "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=http_error status=%s",
+                    message.node_id,
+                    self.id,
+                    message.type,
+                    attempt,
+                    message.term,
+                    exc.status,
+                )
                 return self._error_response(message.type, "http_error", exc, attempt)
             except (
                 aiohttp.ClientConnectionError,
@@ -215,23 +225,51 @@ class PeerHttpClient:
                 self._record_metrics(message.type, "transport_error", duration_ms)
                 if self._should_retry(message.type) and attempt < max_attempts:
                     logger.warning(
-                        "Peer RPC transport failure, retrying attempt %s/%s: peer=%s rpc=%s err=%s",
-                        attempt,
-                        max_attempts,
+                        "peer_rpc_retry node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=transport_error err=%s",
+                        message.node_id,
                         self.id,
                         message.type,
+                        attempt,
+                        message.term,
                         exc,
                     )
                     await self._sleep_for_retry(attempt)
                     continue
+                logger.error(
+                    "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=transport_error err=%s",
+                    message.node_id,
+                    self.id,
+                    message.type,
+                    attempt,
+                    message.term,
+                    exc,
+                )
                 return self._error_response(message.type, "transport_error", exc, attempt)
             except ValueError as exc:
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_metrics(message.type, "decode_error", duration_ms)
+                logger.error(
+                    "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=decode_error err=%s",
+                    message.node_id,
+                    self.id,
+                    message.type,
+                    attempt,
+                    message.term,
+                    exc,
+                )
                 return self._error_response(message.type, "decode_error", exc, attempt)
             except Exception as exc:  # pragma: no cover - defensive
                 duration_ms = (time.perf_counter() - start) * 1000
                 self._record_metrics(message.type, "unexpected_error", duration_ms)
+                logger.error(
+                    "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=unexpected_error err=%s",
+                    message.node_id,
+                    self.id,
+                    message.type,
+                    attempt,
+                    message.term,
+                    exc,
+                )
                 return self._error_response(message.type, "unexpected_error", exc, attempt)
 
         return RpcResponse.err(
