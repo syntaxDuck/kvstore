@@ -150,6 +150,6 @@ uv run mypy
 uv run pytest -q --cov --cov-report=term-missing
 ```
 
-Coverage guardrail: CI enforces a minimum of 60% on `src/core/raft` plus `src/core/peer_http_client.py`.
+Coverage guardrail: CI enforces a minimum of 70% on `src/core/raft` plus `src/core/peer_http_client.py`.
 
 To block PR merges on failure, set branch protection on `main` and require the `CI / Test, Lint, Type` status check.
