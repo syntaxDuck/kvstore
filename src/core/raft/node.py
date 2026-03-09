@@ -353,7 +353,15 @@ class Node:
                 continue
             await self.register_peer(peer)
 
-    async def register_peer(self, peer_details: NodeDetails) -> None:
+    async def register_peer(self, peer_details: NodeDetails) -> bool:
+        if any(peer.id == peer_details.id for peer in self.peers):
+            logger.debug(
+                "Peer already registered: node=%s peer_id=%s",
+                self.id,
+                peer_details.id,
+            )
+            return True
+
         logger.info(f"Registering peer: {peer_details}")
         peer = PeerHttpClient(peer_details)
         res = await peer.send_rpc(
@@ -368,9 +376,11 @@ class Node:
         if res.is_ok:
             logger.info(f"Successfully registered peer: {peer_details.address}")
             self.peers.append(peer)
-            return
+            return True
 
         logger.warning(f"Failed to register peer: {peer}")
+        await peer.close()
+        return False
 
     async def close_peer_sessions(self) -> None:
         for peer in self.peers:

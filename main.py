@@ -75,11 +75,11 @@ async def discover_and_register_peers(node: Node) -> None:
                     host=host,
                     port=port,
                 )
-                await node.register_peer(peer_details)
-                registered += 1
-                logger.info(
-                    f"Node {node.id}: Registered peer {peer_ordinal} at {host}:{port}"
-                )
+                if await node.register_peer(peer_details):
+                    registered += 1
+                    logger.info(
+                        f"Node {node.id}: Registered peer {peer_ordinal} at {host}:{port}"
+                    )
             except Exception as e:
                 logger.warning(
                     f"Node {node.id}: Failed to register peer {host}:{port}: {e}"

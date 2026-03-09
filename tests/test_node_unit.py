@@ -179,10 +179,11 @@ async def test_register_peer_appends_on_success(monkeypatch):
     monkeypatch.setattr("src.core.raft.node.PeerHttpClient", FakePeerClient)
     peer = NodeDetails(id=2, role=Role.FOLLOWER, host="127.0.0.1", port=8081)
 
-    await Node.register_peer(node, peer)
+    registered = await Node.register_peer(node, peer)
 
     assert len(node.peers) == 1
     assert node.peers[0].id == 2
+    assert registered is True
 
 
 @pytest.mark.asyncio
@@ -194,6 +195,7 @@ async def test_register_peer_does_not_append_on_error(monkeypatch):
             self.id = details.id
             self.role = details.role
             self.address = details.address
+            self.close = AsyncMock()
 
         async def send_rpc(self, _request):
             return RpcResponse.err(self.id, self.role, {"Error": "nope"})
@@ -201,9 +203,28 @@ async def test_register_peer_does_not_append_on_error(monkeypatch):
     monkeypatch.setattr("src.core.raft.node.PeerHttpClient", FakePeerClient)
     peer = NodeDetails(id=2, role=Role.FOLLOWER, host="127.0.0.1", port=8081)
 
-    await Node.register_peer(node, peer)
+    registered = await Node.register_peer(node, peer)
 
     assert node.peers == []
+    assert registered is False
+
+
+@pytest.mark.asyncio
+async def test_register_peer_skips_duplicate_peer_id(monkeypatch):
+    node = _build_node()
+    node.peers = [SimpleNamespace(id=2, address=("127.0.0.1", 8081))]
+
+    class FakePeerClient:
+        def __init__(self, _details):
+            raise AssertionError("should not construct duplicate peer client")
+
+    monkeypatch.setattr("src.core.raft.node.PeerHttpClient", FakePeerClient)
+    peer = NodeDetails(id=2, role=Role.FOLLOWER, host="127.0.0.1", port=8081)
+
+    registered = await Node.register_peer(node, peer)
+
+    assert registered is True
+    assert len(node.peers) == 1
 
 
 @pytest.mark.asyncio
