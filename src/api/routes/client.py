@@ -6,6 +6,7 @@ from pydantic import BaseModel
 
 from ...core.logging import get_logger
 from ...core.metrics import get_metrics
+from ...core.types import Command, RpcRequest
 
 logger = get_logger(__name__)
 
@@ -23,6 +24,58 @@ def get_node(request: Request):
     if node is None:
         raise HTTPException(status_code=503, detail="Node not initialized")
     return node
+
+
+def _leader_unavailable_error(node) -> HTTPException:
+    leader_addr = node.leader_address
+    return HTTPException(
+        status_code=409,
+        detail={
+            "error": "not_leader",
+            "leader_address": (
+                {"host": leader_addr[0], "port": leader_addr[1]}
+                if leader_addr
+                else None
+            ),
+        },
+    )
+
+
+async def _replicate_and_commit(node, cmd: Command) -> bool:
+    if len(node.peers) == 0:
+        node.log.append(node.role_state.term, cmd)
+        node.match_index[node.id] = node.log.details.index
+        node._update_commit_index()
+        return True
+
+    next_index = node.log.details.index + 1
+    responses = await node.send_to_all_peers(
+        RpcRequest.append_entry(
+            node.id,
+            node.role,
+            node.role_state.term,
+            node.log.details.index,
+            node.log.details.term,
+            cmd,
+        )
+    )
+
+    acked_peer_ids = [res.node_id for res in responses if res.is_ack]
+    follower_acks = len(acked_peer_ids)
+    logger.info(
+        "Acknowledged by %s peers (need quorum %s)",
+        follower_acks,
+        node._quorum_size(),
+    )
+    if not node._has_majority(follower_acks):
+        return False
+
+    node.log.append(node.role_state.term, cmd)
+    node.match_index[node.id] = node.log.details.index
+    for peer_id in acked_peer_ids:
+        node.update_match_index(peer_id, next_index)
+    node._update_commit_index()
+    return True
 
 
 @router.get("/kv/{key}")
@@ -55,52 +108,14 @@ async def set_value(request: Request, body: KvSetRequest) -> dict[str, Any]:
     )
 
     if not node.is_leader:
-        logger.warning(
-            f"Write rejected: node {node.id} is not leader (role={node.role_state.role})"
-        )
-        leader_addr = node.leader_address
-        if leader_addr:
-            raise HTTPException(
-                status_code=307,
-                detail=f"Not leader, redirect to {leader_addr[0]}:{leader_addr[1]}",
-            )
-        raise HTTPException(status_code=503, detail="No leader available")
-
-    from ...core.types import Command
+        logger.warning("Write rejected: node %s is not leader (role=%s)", node.id, node.role_state.role)
+        raise _leader_unavailable_error(node)
 
     metrics = get_metrics()
     start_time = time.perf_counter()
 
     cmd = Command(op="SET", key=body.key, val=body.val)
-
-    logger.info(f"Write request: peers={len(node.peers)}, cmd={cmd}")
-
-    responses = await node.send_to_all_peers_from_http(
-        cmd,
-        node.role_state.term,
-        node.log.details.index,
-        node.log.details.term,
-    )
-
-    logger.info(f"Replication responses: {responses}")
-    follower_acks = sum(1 for r in responses if r.get("success") is True)
-
-    logger.info(
-        f"Acknowledged by {follower_acks} peers (need quorum {node._quorum_size()})"
-    )
-
-    if node._has_majority(follower_acks):
-        node.log.append(node.role_state.term, cmd)
-        node.match_index[node.id] = node.log.details.index
-
-        for r in responses:
-            if r.get("success") is True:
-                peer_id = r.get("peer_id")
-                match_idx = r.get("last_log_index", node.log.details.index)
-                if peer_id is not None:
-                    node.update_match_index(peer_id, match_idx)
-
-        node._update_commit_index()
+    if await _replicate_and_commit(node, cmd):
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         metrics.record_timing_sync("raft_replication_latency_ms", duration_ms)
@@ -118,37 +133,10 @@ async def delete_value(request: Request, key: str) -> dict[str, Any]:
     node = get_node(request)
 
     if not node.is_leader:
-        leader_addr = node.leader_address
-        if leader_addr:
-            raise HTTPException(
-                status_code=307,
-                detail=f"Not leader, redirect to {leader_addr[0]}:{leader_addr[1]}",
-            )
-        raise HTTPException(status_code=503, detail="No leader available")
-
-    from ...core.types import Command
+        raise _leader_unavailable_error(node)
 
     cmd = Command(op="DELETE", key=key, val=None)
-
-    responses = await node.send_to_all_peers_from_http(
-        cmd,
-        node.role_state.term,
-        node.log.details.index,
-        node.log.details.term,
-    )
-
-    follower_acks = sum(1 for r in responses if r.get("success") is True)
-
-    if node._has_majority(follower_acks):
-        node.log.append(node.role_state.term, cmd)
-        node.match_index[node.id] = node.log.details.index
-        for r in responses:
-            if r.get("success") is True:
-                peer_id = r.get("peer_id")
-                match_idx = r.get("last_log_index", node.log.details.index)
-                if peer_id is not None:
-                    node.update_match_index(peer_id, match_idx)
-        node._update_commit_index()
+    if await _replicate_and_commit(node, cmd):
         return {"status": "ok", "key": key}
 
     raise HTTPException(status_code=500, detail="Failed to replicate to majority")

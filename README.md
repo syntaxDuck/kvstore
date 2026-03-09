@@ -159,4 +159,4 @@ Coverage guardrail: CI enforces a minimum of 85% on `src/core/raft` plus `src/co
 
 CI also runs a separate 3-node integration smoke job (`scripts/ci_smoke.sh`) validating ready + leader write/read flow and uploading smoke logs on failure.
 
-To block PR merges on failure, set branch protection on `main` and require the `CI / Test, Lint, Type` status check.
+To block PR merges on failure, set branch protection on `main` and require both `Test, Lint, Type` and `Integration Smoke` status checks.

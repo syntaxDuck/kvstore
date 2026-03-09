@@ -1,3 +1,4 @@
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException
@@ -45,15 +46,23 @@ async def ready_check(request: Request) -> dict[str, Any]:
 
     reachable_peers = 0
     peer_errors: list[str] = []
-    for peer in node.peers:
+
+    async def ping_peer(peer) -> tuple[int, bool, Any]:
         try:
-            res = await peer.ping()
+            timeout = max(settings.RPC_HTTP_TOTAL_TIMEOUT_SEC, 0.1)
+            res = await asyncio.wait_for(peer.ping(), timeout=timeout)
             if res.is_ok:
-                reachable_peers += 1
-            else:
-                peer_errors.append(f"peer_{peer.id}:{res.payload}")
+                return peer.id, True, None
+            return peer.id, False, res.payload
         except Exception as exc:
-            peer_errors.append(f"peer_{peer.id}:{exc}")
+            return peer.id, False, str(exc)
+
+    ping_results = await asyncio.gather(*(ping_peer(peer) for peer in node.peers))
+    for peer_id, is_ok, err in ping_results:
+        if is_ok:
+            reachable_peers += 1
+        else:
+            peer_errors.append(f"peer_{peer_id}:{err}")
 
     total_nodes = len(node.peers) + 1
     quorum = total_nodes // 2 + 1
@@ -104,10 +113,6 @@ async def leader_info(request: Request) -> dict[str, Any]:
     return {"leader_id": None, "status": "unknown"}
 
 
-class PingRequest:
-    pass
-
-
 @router.post("/ping")
 async def ping(request: Request) -> dict[str, Any]:
     """Peer registration endpoint."""
@@ -120,10 +125,6 @@ async def ping(request: Request) -> dict[str, Any]:
         "node_id": node.id,
         "role": node.role,
     }
-
-
-class VoteRequest:
-    pass
 
 
 @router.post("/vote")
@@ -148,10 +149,6 @@ async def request_vote(
         "term": node.role_state.term,
         "node_id": node.id,
     }
-
-
-class AppendRequest:
-    pass
 
 
 @router.post("/append")

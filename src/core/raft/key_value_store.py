@@ -75,6 +75,6 @@ class KeyValueStore:
         except AttributeError as e:
             logger.error(f"Invalid command object: {e}")
             return KeyValueStoreResponse.err(e)
-        except Exception as e:
-            logger.error(f"Unexpected error applying command: {e}")
+        except TypeError as e:
+            logger.error(f"Invalid command object: {e}")
             return KeyValueStoreResponse.err(e)
