@@ -243,9 +243,9 @@ class Node:
                 self.id, self.role, {"Success": "Client Write Success"}
             )
 
-        logger.debug("Less than half of the peers acknolaged")
+        logger.debug("Less than half of the peers acknowledged")
         return RpcResponse.err(
-            self.id, self.role, {"Error": "Majority of peers did not acknolage"}
+            self.id, self.role, {"Error": "Majority of peers did not acknowledge"}
         )
 
     async def _handle_append_entry(self, req: RpcRequest) -> RpcResponse:

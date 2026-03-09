@@ -330,3 +330,190 @@ def test_update_match_index_tracks_peer_and_recomputes_commit():
 
     assert node.match_index[3] == 8
     node._update_commit_index.assert_called_once()
+
+
+def test_become_leader_starts_heartbeat_and_resets_match_index(monkeypatch):
+    node = _build_node()
+    node.role_state.role = Role.CANDIDATE
+    node.peers = [SimpleNamespace(id=2), SimpleNamespace(id=3)]
+    node.election_task = SimpleNamespace(stop=Mock())
+    node.heartbeat_task = SimpleNamespace(start=Mock())
+    node._schedule_role_label = Mock()
+    node._election_start_time = 0.0
+
+    metrics = SimpleNamespace(
+        increment_counter_sync=Mock(),
+        record_timing_sync=Mock(),
+    )
+    monkeypatch.setattr("src.core.raft.node.get_metrics", lambda: metrics)
+    monkeypatch.setattr("src.core.raft.node.time.perf_counter", lambda: 0.01)
+
+    Node._become_leader(node)
+
+    node.election_task.stop.assert_called_once()
+    node.heartbeat_task.start.assert_called_once()
+    node._schedule_role_label.assert_called_once()
+    assert node.match_index == {2: 0, 3: 0}
+    metrics.increment_counter_sync.assert_called_once_with("raft_role_changes.leader")
+    metrics.record_timing_sync.assert_called_once()
+
+
+def test_step_down_starts_election_and_resets_commit(monkeypatch):
+    node = _build_node()
+    node.role_state.role = Role.LEADER
+    node.commit_index = 9
+    node.election_task = SimpleNamespace(start=Mock())
+    node.heartbeat_task = SimpleNamespace(stop=Mock())
+    node._schedule_role_label = Mock()
+
+    metrics = SimpleNamespace(increment_counter_sync=Mock())
+    monkeypatch.setattr("src.core.raft.node.get_metrics", lambda: metrics)
+
+    Node._step_down(node)
+
+    node.heartbeat_task.stop.assert_called_once()
+    node.election_task.start.assert_called_once()
+    node._schedule_role_label.assert_called_once()
+    assert node.commit_index == 0
+    metrics.increment_counter_sync.assert_called_once_with("raft_role_changes.follower")
+
+
+def test_schedule_role_label_noop_without_pod_name():
+    node = _build_node()
+    node.pod_name = ""
+
+    Node._schedule_role_label(node, "leader")
+
+
+def test_schedule_role_label_handles_runtime_error(monkeypatch):
+    node = _build_node()
+    node.pod_name = "pod-1"
+
+    def raise_runtime_error(coro):
+        coro.close()
+        raise RuntimeError("no loop")
+
+    monkeypatch.setattr("src.core.raft.node.asyncio.create_task", raise_runtime_error)
+    Node._schedule_role_label(node, "leader")
+
+
+@pytest.mark.asyncio
+async def test_get_k8s_api_returns_none_without_k8s_inputs(monkeypatch):
+    node = _build_node()
+    node.pod_name = ""
+    node.namespace = "default"
+    node._k8s_api = None
+
+    monkeypatch.setattr("src.core.raft.node.k8s_client", object())
+    monkeypatch.setattr("src.core.raft.node.k8s_config", object())
+    res = await Node._get_k8s_api(node)
+
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_get_k8s_api_returns_cached_instance():
+    node = _build_node()
+    node.pod_name = "pod-1"
+    node.namespace = "default"
+    cached = object()
+    node._k8s_api = cached
+
+    res = await Node._get_k8s_api(node)
+
+    assert res is cached
+
+
+@pytest.mark.asyncio
+async def test_get_k8s_api_loads_config_and_creates_api(monkeypatch):
+    node = _build_node()
+    node.pod_name = "pod-1"
+    node.namespace = "default"
+    node._k8s_api = None
+    node._k8s_config_loaded = False
+
+    fake_api = object()
+    monkeypatch.setattr(
+        "src.core.raft.node.k8s_config",
+        SimpleNamespace(load_incluster_config=lambda: None),
+    )
+    monkeypatch.setattr(
+        "src.core.raft.node.k8s_client",
+        SimpleNamespace(CoreV1Api=lambda: fake_api),
+    )
+
+    res = await Node._get_k8s_api(node)
+
+    assert res is fake_api
+    assert node._k8s_config_loaded is True
+
+
+@pytest.mark.asyncio
+async def test_get_k8s_api_returns_none_on_config_error(monkeypatch):
+    node = _build_node()
+    node.pod_name = "pod-1"
+    node.namespace = "default"
+    node._k8s_api = None
+
+    def fail():
+        raise RuntimeError("bad k8s config")
+
+    monkeypatch.setattr(
+        "src.core.raft.node.k8s_config",
+        SimpleNamespace(load_incluster_config=fail),
+    )
+    monkeypatch.setattr(
+        "src.core.raft.node.k8s_client",
+        SimpleNamespace(CoreV1Api=lambda: object()),
+    )
+
+    res = await Node._get_k8s_api(node)
+
+    assert res is None
+
+
+@pytest.mark.asyncio
+async def test_patch_role_label_success(monkeypatch):
+    node = _build_node()
+    node.pod_name = "pod-1"
+    node.namespace = "default"
+
+    class FakeApi:
+        def __init__(self):
+            self.calls = []
+
+        def patch_namespaced_pod(self, pod_name, namespace, body):
+            self.calls.append((pod_name, namespace, body))
+
+    api = FakeApi()
+    node._get_k8s_api = AsyncMock(return_value=api)
+    class FakeLoop:
+        async def run_in_executor(self, _executor, fn):
+            fn()
+            return None
+
+    monkeypatch.setattr("src.core.raft.node.asyncio.get_running_loop", lambda: FakeLoop())
+
+    await Node._patch_role_label(node, "leader")
+
+    assert api.calls[0][0] == "pod-1"
+    assert api.calls[0][1] == "default"
+    assert api.calls[0][2]["metadata"]["labels"]["kvstore-role"] == "leader"
+
+
+@pytest.mark.asyncio
+async def test_patch_role_label_ignores_patch_errors(monkeypatch):
+    node = _build_node()
+    node.pod_name = "pod-1"
+    node.namespace = "default"
+    node._get_k8s_api = AsyncMock(return_value=object())
+
+    async def fail_run_in_executor(*_args, **_kwargs):
+        raise RuntimeError("patch failed")
+
+    monkeypatch.setattr(
+        "src.core.raft.node.asyncio.get_running_loop",
+        lambda: SimpleNamespace(run_in_executor=fail_run_in_executor),
+    )
+
+    await Node._patch_role_label(node, "leader")
