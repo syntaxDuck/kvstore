@@ -21,6 +21,10 @@ def test_default_values(monkeypatch):
     assert settings.LOGS_DIR == "logs"
     assert settings.LOG_TO_FILE is True
     assert settings.LOG_TO_CONSOLE is True
+    assert settings.LOG_LEVEL == "INFO"
+    assert settings.RPC_DEBUG is False
+    assert settings.ENABLE_DOCS is False
+    assert settings.RPC_HTTP_MAX_RETRIES == 2
 
 
 def test_env_file_loading(monkeypatch, tmp_path):

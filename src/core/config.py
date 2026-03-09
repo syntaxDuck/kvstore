@@ -46,14 +46,36 @@ class Settings(BaseSettings):
         default=True, description="Flag to enable logging to console"
     )
     LOG_LEVEL: str = Field(
-        default="DEBUG", description="Level at which logs are captured"
+        default="INFO", description="Level at which logs are captured"
     )
     RPC_DEBUG: bool = Field(
-        default=True, description="Enable verbose RPC debug logging"
+        default=False, description="Enable verbose RPC debug logging"
     )
 
     # API
-    ENABLE_DOCS: bool = Field(default=True, description="Enable documentation endpoint")
+    ENABLE_DOCS: bool = Field(
+        default=False, description="Enable documentation endpoint"
+    )
+
+    # Peer RPC reliability
+    RPC_HTTP_CONNECT_TIMEOUT_SEC: float = Field(
+        default=1.0, description="Peer RPC connect timeout in seconds"
+    )
+    RPC_HTTP_READ_TIMEOUT_SEC: float = Field(
+        default=2.0, description="Peer RPC read timeout in seconds"
+    )
+    RPC_HTTP_TOTAL_TIMEOUT_SEC: float = Field(
+        default=3.0, description="Peer RPC total request timeout in seconds"
+    )
+    RPC_HTTP_MAX_RETRIES: int = Field(
+        default=2, description="Max retries for idempotent peer RPC calls"
+    )
+    RPC_HTTP_RETRY_BACKOFF_BASE_SEC: float = Field(
+        default=0.05, description="Base backoff delay in seconds for retries"
+    )
+    RPC_HTTP_RETRY_BACKOFF_MAX_SEC: float = Field(
+        default=0.5, description="Max backoff delay in seconds for retries"
+    )
 
     # CORS settings
     CORS_ALLOW_CREDENTIALS: bool = Field(

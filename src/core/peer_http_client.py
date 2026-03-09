@@ -1,9 +1,18 @@
+import asyncio
+import random
+import time
+from typing import Any
+
 import aiohttp
 
+from .config import settings
 from .logging import get_logger
+from .metrics import get_metrics
 from .types import NodeDetails, RpcRequest, RpcResponse
 
 logger = get_logger(__name__)
+
+IDEMPOTENT_RPC_TYPES = {"PING", "HEARTBEAT", "REQUEST_VOTE", "APPEND_ENTRY"}
 
 
 class PeerHttpClient:
@@ -15,6 +24,16 @@ class PeerHttpClient:
         self.base_url = f"http://{self.host}:{self.port}"
         self.address = (peer_details.host, peer_details.port)
 
+        self._session: aiohttp.ClientSession | None = None
+        self._timeout = aiohttp.ClientTimeout(
+            total=settings.RPC_HTTP_TOTAL_TIMEOUT_SEC,
+            connect=settings.RPC_HTTP_CONNECT_TIMEOUT_SEC,
+            sock_read=settings.RPC_HTTP_READ_TIMEOUT_SEC,
+        )
+        self._max_retries = settings.RPC_HTTP_MAX_RETRIES
+        self._retry_backoff_base = settings.RPC_HTTP_RETRY_BACKOFF_BASE_SEC
+        self._retry_backoff_max = settings.RPC_HTTP_RETRY_BACKOFF_MAX_SEC
+
     @property
     def id(self):
         return self.node_id
@@ -23,9 +42,77 @@ class PeerHttpClient:
     def role(self):
         return self.node_role
 
-    async def send_rpc(self, message: RpcRequest) -> RpcResponse:
-        logger.debug(f"Sending {message.type} to peer {self.id} at {self.base_url}")
+    def _should_retry(self, message_type: str) -> bool:
+        return message_type in IDEMPOTENT_RPC_TYPES
 
+    async def _get_session(self) -> aiohttp.ClientSession:
+        if self._session is None or self._session.closed:
+            self._session = aiohttp.ClientSession(timeout=self._timeout)
+        return self._session
+
+    async def close(self) -> None:
+        if self._session and not self._session.closed:
+            await self._session.close()
+
+    async def _sleep_for_retry(self, attempt: int) -> None:
+        base_delay = min(self._retry_backoff_base * (2 ** (attempt - 1)), self._retry_backoff_max)
+        jitter = random.uniform(0.0, base_delay / 2)
+        await asyncio.sleep(base_delay + jitter)
+
+    def _metric_prefix(self, message_type: str) -> str:
+        return f"peer_rpc.{message_type.lower()}"
+
+    def _record_metrics(self, message_type: str, outcome: str, duration_ms: float) -> None:
+        metrics = get_metrics()
+        prefix = self._metric_prefix(message_type)
+        metrics.record_timing_sync(f"{prefix}.duration_ms.{outcome}", duration_ms)
+        metrics.increment_counter_sync(f"{prefix}.count.{outcome}")
+
+    def _error_response(
+        self,
+        message_type: str,
+        category: str,
+        error: Exception,
+        attempt: int,
+    ) -> RpcResponse:
+        return RpcResponse.err(
+            self.id,
+            self.role,
+            {
+                "category": category,
+                "error": str(error),
+                "rpc_type": message_type,
+                "peer_id": self.id,
+                "attempt": attempt,
+            },
+        )
+
+    async def _request_once(
+        self,
+        endpoint: str,
+        params: dict[str, Any] | None = None,
+        payload: Any = None,
+    ) -> dict[str, Any]:
+        session = await self._get_session()
+        async with session.post(f"{self.base_url}{endpoint}", params=params, json=payload) as resp:
+            resp.raise_for_status()
+            return await resp.json()
+
+    def _to_rpc_response(self, message: RpcRequest, data: dict[str, Any]) -> RpcResponse:
+        if message.type == "PING":
+            return RpcResponse.ok(self.id, self.role, data)
+
+        if message.type == "REQUEST_VOTE":
+            return RpcResponse.vote_response(self.id, self.role, data.get("vote", False))
+
+        if message.type in {"APPEND_ENTRY", "HEARTBEAT"}:
+            if data.get("success"):
+                return RpcResponse.ack(self.id, self.role)
+            return RpcResponse.err(self.id, self.role, data)
+
+        return RpcResponse.ok(self.id, self.role, data)
+
+    def _build_request(self, message: RpcRequest) -> tuple[str, dict[str, Any] | None, Any]:
         endpoint_map = {
             "PING": "/internal/v1/ping",
             "HEARTBEAT": "/internal/v1/heartbeat",
@@ -39,79 +126,123 @@ class PeerHttpClient:
         if not endpoint:
             raise ValueError(f"Unknown message type: {message.type}")
 
+        if message.type == "PING":
+            return endpoint, None, None
+
+        if message.type == "REQUEST_VOTE":
+            return (
+                endpoint,
+                {
+                    "candidate_id": message.node_id,
+                    "term": message.term,
+                    "last_log_index": message.last_log_index,
+                    "last_log_term": message.last_log_term,
+                },
+                None,
+            )
+
+        if message.type == "APPEND_ENTRY":
+            payload = message.payload
+            if payload and hasattr(payload, "model_dump"):
+                payload = payload.model_dump()
+            return (
+                endpoint,
+                {
+                    "leader_id": message.node_id,
+                    "term": message.term,
+                    "prev_log_index": message.last_log_index,
+                    "prev_log_term": message.last_log_term,
+                },
+                [payload] if payload else None,
+            )
+
+        if message.type == "HEARTBEAT":
+            return (
+                endpoint,
+                {
+                    "leader_id": message.node_id,
+                    "term": message.term,
+                    "last_log_index": message.last_log_index,
+                    "last_log_term": message.last_log_term,
+                    "commit_index": message.commit_index,
+                },
+                None,
+            )
+
+        return endpoint, None, message.payload
+
+    async def send_rpc(self, message: RpcRequest) -> RpcResponse:
+        logger.debug("Sending %s to peer %s at %s", message.type, self.id, self.base_url)
+
         try:
-            async with aiohttp.ClientSession() as session:
-                if message.type == "PING":
-                    async with session.post(f"{self.base_url}{endpoint}") as resp:
-                        data = await resp.json()
-                        return RpcResponse.ok(self.id, self.role, data)
+            endpoint, params, payload = self._build_request(message)
+        except Exception as exc:
+            return self._error_response(message.type, "request_build_error", exc, 1)
 
-                elif message.type == "REQUEST_VOTE":
-                    params = {
-                        "candidate_id": message.node_id,
-                        "term": message.term,
-                        "last_log_index": message.last_log_index,
-                        "last_log_term": message.last_log_term,
-                    }
-                    async with session.post(
-                        f"{self.base_url}{endpoint}", params=params
-                    ) as resp:
-                        data = await resp.json()
-                        return RpcResponse.vote_response(
-                            self.id, self.role, data.get("vote", False)
-                        )
+        max_attempts = 1 + self._max_retries if self._should_retry(message.type) else 1
 
-                elif message.type == "APPEND_ENTRY":
-                    payload = message.payload
-                    if payload and hasattr(payload, "model_dump"):
-                        payload = payload.model_dump()
-                    params = {
-                        "leader_id": message.node_id,
-                        "term": message.term,
-                        "prev_log_index": message.last_log_index,
-                        "prev_log_term": message.last_log_term,
-                    }
-                    if payload:
-                        async with session.post(
-                            f"{self.base_url}{endpoint}", params=params, json=[payload]
-                        ) as resp:
-                            data = await resp.json()
-                            if data.get("success"):
-                                return RpcResponse.ack(self.id, self.role)
-                            return RpcResponse.err(self.id, self.role, data)
-                    else:
-                        async with session.post(
-                            f"{self.base_url}{endpoint}", params=params
-                        ) as resp:
-                            data = await resp.json()
-                            if data.get("success"):
-                                return RpcResponse.ack(self.id, self.role)
-                            return RpcResponse.err(self.id, self.role, data)
+        for attempt in range(1, max_attempts + 1):
+            start = time.perf_counter()
+            try:
+                data = await self._request_once(endpoint, params=params, payload=payload)
+                duration_ms = (time.perf_counter() - start) * 1000
+                self._record_metrics(message.type, "ok", duration_ms)
+                return self._to_rpc_response(message, data)
+            except aiohttp.ClientResponseError as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                self._record_metrics(message.type, "http_error", duration_ms)
+                retryable = exc.status >= 500
+                if self._should_retry(message.type) and retryable and attempt < max_attempts:
+                    logger.warning(
+                        "Peer RPC failed (http status=%s), retrying attempt %s/%s: peer=%s rpc=%s",
+                        exc.status,
+                        attempt,
+                        max_attempts,
+                        self.id,
+                        message.type,
+                    )
+                    await self._sleep_for_retry(attempt)
+                    continue
+                return self._error_response(message.type, "http_error", exc, attempt)
+            except (
+                aiohttp.ClientConnectionError,
+                aiohttp.ClientOSError,
+                aiohttp.ServerTimeoutError,
+                aiohttp.ClientPayloadError,
+                asyncio.TimeoutError,
+            ) as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                self._record_metrics(message.type, "transport_error", duration_ms)
+                if self._should_retry(message.type) and attempt < max_attempts:
+                    logger.warning(
+                        "Peer RPC transport failure, retrying attempt %s/%s: peer=%s rpc=%s err=%s",
+                        attempt,
+                        max_attempts,
+                        self.id,
+                        message.type,
+                        exc,
+                    )
+                    await self._sleep_for_retry(attempt)
+                    continue
+                return self._error_response(message.type, "transport_error", exc, attempt)
+            except ValueError as exc:
+                duration_ms = (time.perf_counter() - start) * 1000
+                self._record_metrics(message.type, "decode_error", duration_ms)
+                return self._error_response(message.type, "decode_error", exc, attempt)
+            except Exception as exc:  # pragma: no cover - defensive
+                duration_ms = (time.perf_counter() - start) * 1000
+                self._record_metrics(message.type, "unexpected_error", duration_ms)
+                return self._error_response(message.type, "unexpected_error", exc, attempt)
 
-                elif message.type == "HEARTBEAT":
-                    params = {
-                        "leader_id": message.node_id,
-                        "term": message.term,
-                        "last_log_index": message.last_log_index,
-                        "last_log_term": message.last_log_term,
-                        "commit_index": getattr(message, "commit_index", 0),
-                    }
-                    async with session.post(
-                        f"{self.base_url}{endpoint}", params=params
-                    ) as resp:
-                        data = await resp.json()
-                        if data.get("success"):
-                            return RpcResponse.ack(self.id, self.role)
-                        return RpcResponse.err(self.id, self.role, data)
-
-        except aiohttp.ClientError as e:
-            logger.error(f"HTTP error communicating with peer {self.id}: {e}")
-            raise
-        except Exception as e:
-            logger.error(f"Error communicating with peer {self.id}: {e}")
-            raise
-
-        raise ValueError(f"Unhandled message type: {message.type}")
+        return RpcResponse.err(
+            self.id,
+            self.role,
+            {
+                "category": "retry_exhausted",
+                "rpc_type": message.type,
+                "peer_id": self.id,
+            },
+        )
 
     async def ping(self) -> RpcResponse:
         """Simple ping to check if peer is reachable."""
