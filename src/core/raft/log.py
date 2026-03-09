@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 class WriteAheadLog:
     def __init__(self, name: str = "store_log.kvs", path: str = ".") -> None:
         self.path = Path(path)
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        self.path.mkdir(parents=True, exist_ok=True)
         self.log_name = name
         self.log_path = self.path / name
         self.details = LogDetails()
@@ -47,8 +47,10 @@ class WriteAheadLog:
         if not self.file_handle:
             raise LogError
 
-        last_line = self.file_handle.readline()
-        return LogEntry(**json.loads(last_line))
+        entry = self.replay_log_from(self.details.index)
+        if not entry:
+            raise LogError
+        return entry
 
     def append(self, term: int, cmd: Command) -> WriteAheadLogResponse:
         if not self.file_handle:
@@ -57,6 +59,7 @@ class WriteAheadLog:
         try:
             self.details.term = term
             self.details.index += 1
+            self.details.length += 1
             entry = LogEntry(index=self.details.index, term=term, cmd=cmd)
 
             self.file_handle.write(entry.serialize())

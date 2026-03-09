@@ -213,6 +213,7 @@ class Node:
 
         cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
 
+        next_index = self.log.details.index + 1
         responses = await self.send_to_all_peers(
             RpcRequest.append_entry(
                 self.id,
@@ -224,15 +225,16 @@ class Node:
             )
         )
 
-        count = 0
+        follower_acks = 0
         for res in responses:
             if res.status == "ACK":
-                count += 1
+                follower_acks += 1
+                self.update_match_index(res.node_id, next_index)
 
-        if count > len(self.peers) // 2:
+        if self._has_majority(follower_acks):
             self.log.append(self.role_state.term, cmd)
-            self.store.apply(cmd)
-            logger.debug(f"{self.store.value_store}")
+            self.match_index[self.id] = self.log.details.index
+            self._update_commit_index()
             return RpcResponse.ok(
                 self.id, self.role, {"Success": "Client Write Success"}
             )
@@ -256,8 +258,6 @@ class Node:
         logger.debug(f"AppendEntry from leader {req.node_id}, term {req.term}")
         cmd = Command(**req.payload) if isinstance(req.payload, dict) else req.payload
         self.log.append(req.term, cmd)
-        self.store.apply(cmd)
-        logger.debug(f"{self.store.value_store}")
         return RpcResponse.ack(self.id, self.role)
 
     async def _handle_vote_request(self, req: RpcRequest) -> RpcResponse:
@@ -321,7 +321,15 @@ class Node:
                         responses.append(data)
             except Exception as e:
                 logger.warning(f"Failed to send to peer {peer.id}: %s", e)
-                responses.append({"status": "ERROR", "Error": str(e)})
+                responses.append(
+                    {
+                        "success": False,
+                        "term": self.role_state.term,
+                        "last_log_index": last_log_index,
+                        "peer_id": peer.id,
+                        "error": str(e),
+                    }
+                )
 
         return responses
 
@@ -458,21 +466,30 @@ class Node:
         if not self.is_leader:
             return
 
-        total_nodes = len(self.peers) + 1
-        majority = total_nodes // 2 + 1
+        local_index = self.log.details.index
+        candidate_indexes = {local_index, *self.match_index.values()}
 
-        sorted_matches = sorted(self.match_index.values(), reverse=True)
-        for i, match_idx in enumerate(sorted_matches):
-            replicated_count = i + 1
-            if replicated_count >= majority:
-                if match_idx > self.commit_index:
-                    old_commit = self.commit_index
-                    self.commit_index = match_idx
-                    logger.info(
-                        f"Node {self.id}: Commit index updated from {old_commit} to {self.commit_index}"
-                    )
-                    self._apply_committed()
+        for candidate in sorted(candidate_indexes, reverse=True):
+            if candidate <= self.commit_index:
+                continue
+            replicated_count = 1 + sum(
+                1 for idx in self.match_index.values() if idx >= candidate
+            )
+            if replicated_count >= self._quorum_size():
+                old_commit = self.commit_index
+                self.commit_index = candidate
+                logger.info(
+                    f"Node {self.id}: Commit index updated from {old_commit} to {self.commit_index}"
+                )
+                self._apply_committed()
                 return
+
+    def _quorum_size(self) -> int:
+        total_nodes = len(self.peers) + 1
+        return total_nodes // 2 + 1
+
+    def _has_majority(self, follower_acks: int) -> bool:
+        return (1 + follower_acks) >= self._quorum_size()
 
     def _apply_committed(self) -> None:
         """Apply all committed entries to the state machine."""

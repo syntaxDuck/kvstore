@@ -4,6 +4,7 @@ from fastapi import APIRouter, Request, HTTPException
 
 from ...core.logging import get_logger
 from ...core.metrics import get_metrics
+from ...core.types import Command
 
 logger = get_logger(__name__)
 
@@ -115,11 +116,22 @@ async def append_entries(
     if term > node.role_state.term:
         node.role_state.become_follower(term)
 
+    if prev_log_index > 0:
+        prev_entry = node.log.replay_log_from(prev_log_index)
+        if not prev_entry or prev_entry.term != prev_log_term:
+            return {
+                "success": False,
+                "term": node.role_state.term,
+                "last_log_index": node.log.details.index,
+                "peer_id": node.id,
+            }
+
     node.election_task.reset()
 
     if entries:
         for entry in entries:
-            node.log.append(term, entry)
+            cmd = Command(**entry) if isinstance(entry, dict) else entry
+            node.log.append(term, cmd)
 
     return {
         "success": True,

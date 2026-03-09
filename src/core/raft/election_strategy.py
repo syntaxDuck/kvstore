@@ -56,17 +56,17 @@ class ElectionStrategy(TimerStrategy):
         except ValueError:
             return
 
-        yeahs = nahs = 0
+        yeahs = 1  # candidates vote for themselves in Raft
         for ballot in ballots:
             logger.info(f"Election ballot for term {self._node.term}: {ballot}")
             if not ballot.is_ok or not ballot.payload:
                 continue
             if ballot.payload.get("vote"):
                 yeahs += 1
-            else:
-                nahs += 1
 
-        if yeahs > len(self._node.peers) / 2:
+        total_nodes = len(self._node.peers) + 1
+        quorum = total_nodes // 2 + 1
+        if yeahs >= quorum:
             logger.info(f"Node: {self._node.id} is the leader")
             self._node.role_state.become_leader()
 

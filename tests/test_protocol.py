@@ -97,7 +97,7 @@ class TestProtocol:
         writer = AsyncMock()
         written_data = bytearray()
 
-        async def capture_write(data):
+        def capture_write(data):
             written_data.extend(data)
 
         writer.write = MagicMock(side_effect=capture_write)

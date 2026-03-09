@@ -83,12 +83,15 @@ async def set_value(request: Request, body: KvSetRequest) -> dict[str, Any]:
     )
 
     logger.info(f"Replication responses: {responses}")
-    count = sum(1 for r in responses if r.get("success") is True)
+    follower_acks = sum(1 for r in responses if r.get("success") is True)
 
-    logger.info(f"Acknowledged by {count} peers (need {len(node.peers) // 2 + 1})")
+    logger.info(
+        f"Acknowledged by {follower_acks} peers (need quorum {node._quorum_size()})"
+    )
 
-    if count > len(node.peers) // 2:
+    if node._has_majority(follower_acks):
         node.log.append(node.role_state.term, cmd)
+        node.match_index[node.id] = node.log.details.index
 
         for r in responses:
             if r.get("success") is True:
@@ -97,7 +100,7 @@ async def set_value(request: Request, body: KvSetRequest) -> dict[str, Any]:
                 if peer_id is not None:
                     node.update_match_index(peer_id, match_idx)
 
-        node._apply_committed()
+        node._update_commit_index()
 
         duration_ms = (time.perf_counter() - start_time) * 1000
         metrics.record_timing_sync("raft_replication_latency_ms", duration_ms)
@@ -134,11 +137,18 @@ async def delete_value(request: Request, key: str) -> dict[str, Any]:
         node.log.details.term,
     )
 
-    count = sum(1 for r in responses if r.get("status") == "ACK")
+    follower_acks = sum(1 for r in responses if r.get("success") is True)
 
-    if count > len(node.peers) // 2:
+    if node._has_majority(follower_acks):
         node.log.append(node.role_state.term, cmd)
-        node.store.apply(cmd)
+        node.match_index[node.id] = node.log.details.index
+        for r in responses:
+            if r.get("success") is True:
+                peer_id = r.get("peer_id")
+                match_idx = r.get("last_log_index", node.log.details.index)
+                if peer_id is not None:
+                    node.update_match_index(peer_id, match_idx)
+        node._update_commit_index()
         return {"status": "ok", "key": key}
 
     raise HTTPException(status_code=500, detail="Failed to replicate to majority")

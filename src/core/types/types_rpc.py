@@ -144,7 +144,7 @@ class RpcResponse(BaseModel):
             status="OK",
             node_id=node_id,
             node_role=node_role,
-            payload=payload,
+            payload=payload or {},
         )
 
     @classmethod
