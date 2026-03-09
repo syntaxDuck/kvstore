@@ -5,7 +5,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
-from .routes import internal_router, client_router
+from .routes import internal_router, client_router, node_router
 from ..core.config import settings
 from ..core.logging import get_logger
 from ..core.metrics import get_metrics
@@ -60,6 +60,7 @@ def create_api() -> FastAPI:
 
     app.include_router(internal_router, prefix="/internal/v1")
     app.include_router(client_router, prefix="/client/v1")
+    app.include_router(node_router)
 
     logger.info("FastAPI application created successfully")
     return app
