@@ -77,6 +77,14 @@ class Settings(BaseSettings):
         default=0.5, description="Max backoff delay in seconds for retries"
     )
 
+    # Snapshotting / compaction
+    SNAPSHOT_ENABLED: bool = Field(
+        default=True, description="Enable snapshot creation and WAL compaction"
+    )
+    SNAPSHOT_THRESHOLD: int = Field(
+        default=500, description="Committed WAL entries threshold to trigger snapshot"
+    )
+
     # CORS settings
     CORS_ALLOW_CREDENTIALS: bool = Field(
         default=True, description="Allow credentials in CORS"

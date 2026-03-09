@@ -77,6 +77,7 @@ class Node:
 
         self.commit_index = 0
         self.last_applied = 0
+        self._restore_state_from_storage()
 
         self.peers: list[PeerHttpClient] = []
         self.match_index: dict[int, int] = {}
@@ -391,6 +392,52 @@ class Node:
         self.log.close()
         logger.info("Node %s shutdown complete", self.id)
 
+    def _restore_state_from_storage(self) -> None:
+        snapshot = self.log.load_snapshot()
+        if snapshot:
+            self.store.value_store = dict(snapshot.get("state", {}))
+            self.commit_index = snapshot["last_included_index"]
+            self.last_applied = snapshot["last_included_index"]
+
+        for entry in self.log.replay_log():
+            if entry.index <= self.last_applied:
+                continue
+            self.store.apply(entry.cmd)
+            self.last_applied = entry.index
+
+        if self.last_applied > self.commit_index:
+            self.commit_index = self.last_applied
+
+    def _maybe_create_snapshot(self) -> None:
+        if not settings.SNAPSHOT_ENABLED:
+            return
+        if self.last_applied <= 0:
+            return
+        log_length = getattr(self.log.details, "length", 0)
+        if log_length < settings.SNAPSHOT_THRESHOLD:
+            return
+        if not all(
+            hasattr(self.log, attr)
+            for attr in ("replay_log_from", "save_snapshot", "compact_up_to")
+        ):
+            return
+
+        entry = self.log.replay_log_from(self.last_applied)
+        snapshot_term = entry.term if entry else self.log.details.term
+        logger.info(
+            "Creating snapshot: node=%s index=%s term=%s wal_length=%s",
+            self.id,
+            self.last_applied,
+            snapshot_term,
+            log_length,
+        )
+        self.log.save_snapshot(
+            self.last_applied,
+            snapshot_term,
+            dict(self.store.value_store),
+        )
+        self.log.compact_up_to(self.last_applied)
+
     # Utility
     ###########################################################################
     def get_vote_decision(
@@ -516,11 +563,15 @@ class Node:
 
     def _apply_committed(self) -> None:
         """Apply all committed entries to the state machine."""
+        applied_any = False
         while self.last_applied < self.commit_index:
             self.last_applied += 1
             entry = self.log.replay_log_from(self.last_applied)
             if entry:
                 self.store.apply(entry.cmd)
+                applied_any = True
                 logger.info(
                     f"Node {self.id}: Applied entry index {self.last_applied}, cmd={entry.cmd}"
                 )
+        if applied_any:
+            self._maybe_create_snapshot()

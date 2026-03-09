@@ -17,6 +17,7 @@ class WriteAheadLog:
         self.path.mkdir(parents=True, exist_ok=True)
         self.log_name = name
         self.log_path = self.path / name
+        self.snapshot_path = self.path / f"{name}.snapshot.json"
         self.details = LogDetails()
 
         self.file_handle: TextIOWrapper | None = None
@@ -32,6 +33,12 @@ class WriteAheadLog:
     def open(self) -> None:
         self.file_handle = open(self.log_path, "a+")
         self.file_handle.seek(0)
+        self.details = LogDetails()
+        snapshot = self.load_snapshot()
+        if snapshot:
+            self.details.index = snapshot["last_included_index"]
+            self.details.term = snapshot["last_included_term"]
+
         entry = None
         for line in self.file_handle:
             self.details.length += 1
@@ -78,6 +85,64 @@ class WriteAheadLog:
         self.file_handle.seek(0)
         for line in self.file_handle:
             yield LogEntry.deserialize(line)
+
+    def load_snapshot(self) -> dict | None:
+        if not self.snapshot_path.exists():
+            return None
+
+        try:
+            with open(self.snapshot_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+        except (OSError, json.JSONDecodeError) as exc:
+            logger.error("Failed to load snapshot: %s", exc)
+            raise LogError
+
+        required_keys = {"last_included_index", "last_included_term", "state"}
+        if not required_keys.issubset(data):
+            raise LogError
+        return data
+
+    def save_snapshot(self, index: int, term: int, state: dict) -> None:
+        tmp_path = self.snapshot_path.with_suffix(".tmp")
+        payload = {
+            "last_included_index": index,
+            "last_included_term": term,
+            "state": state,
+        }
+        try:
+            with open(tmp_path, "w", encoding="utf-8") as f:
+                json.dump(payload, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(tmp_path, self.snapshot_path)
+        except OSError as exc:
+            logger.error("Failed to save snapshot: %s", exc)
+            raise LogError
+
+    def compact_up_to(self, index: int) -> None:
+        if not self.file_handle:
+            raise LogError
+
+        self.file_handle.seek(0)
+        remaining = []
+        for line in self.file_handle:
+            entry = LogEntry.deserialize(line)
+            if entry.index > index:
+                remaining.append(entry)
+
+        try:
+            with open(self.log_path, "w", encoding="utf-8") as f:
+                for entry in remaining:
+                    f.write(entry.serialize())
+                    f.write("\n")
+                f.flush()
+                os.fsync(f.fileno())
+        except OSError as exc:
+            logger.error("Failed to compact log: %s", exc)
+            raise LogError
+
+        self.close()
+        self.open()
 
     def close(self):
         if self.file_handle and not self.file_handle.closed:
