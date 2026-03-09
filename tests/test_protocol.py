@@ -1,5 +1,4 @@
 import pytest
-import asyncio
 import struct
 import json
 from unittest.mock import AsyncMock, MagicMock

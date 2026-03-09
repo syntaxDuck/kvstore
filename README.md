@@ -1,5 +1,7 @@
 # KVStore
 
+[![CI](https://github.com/kameroncomer/kvstore/actions/workflows/ci.yml/badge.svg)](https://github.com/kameroncomer/kvstore/actions/workflows/ci.yml)
+
 A distributed key-value store with Raft consensus and HTTP-based node communication.
 
 ## Overview
@@ -136,3 +138,16 @@ Recommended first checks:
 1. `GET /internal/v1/metrics` and compare failure counters by RPC type.
 2. Search logs for `peer_rpc_failure` and `peer_rpc_retry`.
 3. Correlate `term` + `rpc_type=REQUEST_VOTE|APPEND_ENTRY|HEARTBEAT` for election/replication issues.
+
+## Contributor Notes
+
+Before opening a PR, run the same quality gates enforced in CI:
+
+```bash
+uv sync --all-groups
+uv run ruff check .
+uv run mypy
+uv run pytest -q
+```
+
+To block PR merges on failure, set branch protection on `main` and require the `CI / Test, Lint, Type` status check.

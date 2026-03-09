@@ -123,7 +123,7 @@ class Node:
         self.commit_index = 0
 
         metrics = get_metrics()
-        metrics.increment_counter_sync(f"raft_role_changes.follower")
+        metrics.increment_counter_sync("raft_role_changes.follower")
 
     # K8S
     ############################################################################

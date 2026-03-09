@@ -1,5 +1,4 @@
 import asyncio
-import time
 from collections import defaultdict
 from typing import Any
 
@@ -63,6 +62,7 @@ class Counter:
 class MetricsCollector:
     _instance: "MetricsCollector | None" = None
     _lock = asyncio.Lock()
+    _initialized: bool
 
     def __new__(cls) -> "MetricsCollector":
         if cls._instance is None:
@@ -71,7 +71,7 @@ class MetricsCollector:
         return cls._instance
 
     def __init__(self) -> None:
-        if self._initialized:
+        if getattr(self, "_initialized", False):
             return
         self._initialized = True
         self._histograms: dict[str, Histogram] = defaultdict(Histogram)

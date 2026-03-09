@@ -1,8 +1,3 @@
-import pytest
-import logging
-from pathlib import Path
-from unittest.mock import patch
-
 from src.core import logging as logging_module
 
 
@@ -18,7 +13,7 @@ class TestLogging:
     def test_get_logger_returns_same_type(self):
         logger1 = logging_module.get_logger("shared")
         logger2 = logging_module.get_logger("shared")
-        assert type(logger1) == type(logger2)
+        assert isinstance(logger1, type(logger2))
 
     def test_setup_logging(self, monkeypatch, tmp_path):
         log_dir = tmp_path / "test_logs"

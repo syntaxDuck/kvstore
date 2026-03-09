@@ -1,7 +1,7 @@
 import pytest
 from unittest.mock import Mock, AsyncMock, MagicMock
 
-from src.core.util.timer import TimerTask, TimerStrategy
+from src.core.util.timer import TimerTask
 from src.core.raft.election_strategy import ElectionStrategy
 from src.core.raft.heartbeat_strategy import HeartbeatStrategy
 
