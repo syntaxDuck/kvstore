@@ -14,7 +14,7 @@ logger = get_logger(__name__)
 
 node: Node | None = None
 
-LOCAL_DEV = os.environ.get("LOCAL_DEV", "true").lower() == "true"
+LOCAL_DEV = os.environ.get("LOCAL_DEV", "false").lower() == "true"
 BASE_PORT = int(os.environ.get("BASE_PORT", "8080"))
 
 
@@ -59,9 +59,10 @@ async def discover_and_register_peers(node: Node) -> None:
     logger.info(f"Node {node.id}: Discovering peers: {peer_addresses}")
 
     timeout = settings.PEER_DISCOVERY_TIMEOUT
-    start_time = asyncio.get_event_loop().time()
+    loop = asyncio.get_running_loop()
+    start_time = loop.time()
 
-    while asyncio.get_event_loop().time() - start_time < timeout:
+    while loop.time() - start_time < timeout:
         registered = 0
         for host, port in peer_addresses:
             if LOCAL_DEV:

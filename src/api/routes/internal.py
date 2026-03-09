@@ -46,16 +46,19 @@ async def ready_check(request: Request) -> dict[str, Any]:
 
     reachable_peers = 0
     peer_errors: list[str] = []
+    max_parallel_pings = max(1, min(len(node.peers), 10))
+    ping_semaphore = asyncio.Semaphore(max_parallel_pings)
 
     async def ping_peer(peer) -> tuple[int, bool, Any]:
-        try:
-            timeout = max(settings.RPC_HTTP_TOTAL_TIMEOUT_SEC, 0.1)
-            res = await asyncio.wait_for(peer.ping(), timeout=timeout)
-            if res.is_ok:
-                return peer.id, True, None
-            return peer.id, False, res.payload
-        except Exception as exc:
-            return peer.id, False, str(exc)
+        async with ping_semaphore:
+            try:
+                timeout = max(settings.RPC_HTTP_TOTAL_TIMEOUT_SEC, 0.1)
+                res = await asyncio.wait_for(peer.ping(), timeout=timeout)
+                if res.is_ok:
+                    return peer.id, True, None
+                return peer.id, False, res.payload
+            except Exception as exc:
+                return peer.id, False, str(exc)
 
     ping_results = await asyncio.gather(*(ping_peer(peer) for peer in node.peers))
     for peer_id, is_ok, err in ping_results:

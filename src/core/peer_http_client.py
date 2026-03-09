@@ -54,10 +54,12 @@ class PeerHttpClient:
         if self._session and not self._session.closed:
             await self._session.close()
 
-    async def _sleep_for_retry(self, attempt: int) -> None:
+    async def _sleep_for_retry(self, attempt: int) -> float:
         base_delay = min(self._retry_backoff_base * (2 ** (attempt - 1)), self._retry_backoff_max)
         jitter = random.uniform(0.0, base_delay / 2)
-        await asyncio.sleep(base_delay + jitter)
+        delay = base_delay + jitter
+        await asyncio.sleep(delay)
+        return delay
 
     def _metric_prefix(self, message_type: str) -> str:
         return f"peer_rpc.{message_type.lower()}"
@@ -202,7 +204,20 @@ class PeerHttpClient:
                         message.term,
                         exc.status,
                     )
-                    await self._sleep_for_retry(attempt)
+                    delay = await self._sleep_for_retry(attempt)
+                    delay_ms = max((delay or 0.0) * 1000, 0.0)
+                    get_metrics().record_timing_sync(
+                        f"{self._metric_prefix(message.type)}.retry_delay_ms",
+                        delay_ms,
+                    )
+                    logger.debug(
+                        "peer_rpc_retry_delay node_id=%s peer_id=%s rpc_type=%s attempt=%s delay_ms=%.2f",
+                        message.node_id,
+                        self.id,
+                        message.type,
+                        attempt,
+                        delay_ms,
+                    )
                     continue
                 logger.error(
                     "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=http_error status=%s",
@@ -233,7 +248,20 @@ class PeerHttpClient:
                         message.term,
                         exc,
                     )
-                    await self._sleep_for_retry(attempt)
+                    delay = await self._sleep_for_retry(attempt)
+                    delay_ms = max((delay or 0.0) * 1000, 0.0)
+                    get_metrics().record_timing_sync(
+                        f"{self._metric_prefix(message.type)}.retry_delay_ms",
+                        delay_ms,
+                    )
+                    logger.debug(
+                        "peer_rpc_retry_delay node_id=%s peer_id=%s rpc_type=%s attempt=%s delay_ms=%.2f",
+                        message.node_id,
+                        self.id,
+                        message.type,
+                        attempt,
+                        delay_ms,
+                    )
                     continue
                 logger.error(
                     "peer_rpc_failure node_id=%s peer_id=%s rpc_type=%s attempt=%s term=%s category=transport_error err=%s",

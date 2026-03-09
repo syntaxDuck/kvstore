@@ -27,7 +27,7 @@ async def test_idempotent_rpc_retries_then_succeeds(peer_client):
         return {"success": True}
 
     async def no_sleep(attempt):
-        return None
+        return 0.0
 
     peer_client._request_once = fake_request_once
     peer_client._sleep_for_retry = no_sleep
@@ -93,7 +93,7 @@ async def test_retry_logs_include_diagnostic_context(peer_client, caplog):
         return {"success": True}
 
     async def no_sleep(attempt):
-        return None
+        return 0.0
 
     peer_client._request_once = fail_then_succeed
     peer_client._sleep_for_retry = no_sleep
@@ -157,7 +157,7 @@ async def test_sleep_for_retry_uses_backoff_plus_jitter(peer_client, monkeypatch
     monkeypatch.setattr("src.core.peer_http_client.random.uniform", lambda _a, _b: 0.25)
     monkeypatch.setattr("src.core.peer_http_client.asyncio.sleep", fake_sleep)
 
-    await peer_client._sleep_for_retry(2)
+    delay = await peer_client._sleep_for_retry(2)
 
     # attempt=2 => backoff doubles once from configured base, then adds jitter.
     expected_base = min(
@@ -165,6 +165,7 @@ async def test_sleep_for_retry_uses_backoff_plus_jitter(peer_client, monkeypatch
         peer_client._retry_backoff_max,
     )
     assert recorded["delay"] == pytest.approx(expected_base + 0.25)
+    assert delay == pytest.approx(expected_base + 0.25)
 
 
 @pytest.mark.asyncio
@@ -258,7 +259,7 @@ async def test_send_rpc_http_error_retries_then_succeeds(peer_client):
 
     peer_client._request_once = fail_then_ok
     async def no_sleep(_attempt):
-        return None
+        return 0.0
 
     peer_client._sleep_for_retry = no_sleep
     req = RpcRequest.heartbeat(1, "LEADER", term=2, last_log_index=1, last_log_term=1, commit_index=1)

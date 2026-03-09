@@ -21,7 +21,9 @@ class MetricsMiddleware(BaseHTTPMiddleware):
         response = await call_next(request)
 
         duration_ms = (time.perf_counter() - start_time) * 1000
-        endpoint = f"{request.method} {request.url.path}"
+        route = request.scope.get("route")
+        route_path = getattr(route, "path", request.url.path)
+        endpoint = f"{request.method} {route_path}"
         metrics.record_timing_sync(f"api_request_duration_ms.{endpoint}", duration_ms)
         metrics.increment_counter_sync(
             f"api_request_count.{endpoint}.{response.status_code}"

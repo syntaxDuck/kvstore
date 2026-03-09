@@ -296,47 +296,6 @@ class Node:
 
         return responses
 
-    async def send_to_all_peers_from_http(
-        self, cmd: Command, term: int, last_log_index: int, last_log_term: int
-    ) -> list[dict]:
-        """Send command to all peers for replication via HTTP."""
-        if len(self.peers) == 0:
-            return []
-
-        import aiohttp
-
-        responses = []
-        for peer in self.peers:
-            try:
-                async with aiohttp.ClientSession() as session:
-                    params = {
-                        "leader_id": self.id,
-                        "term": term,
-                        "prev_log_index": last_log_index,
-                        "prev_log_term": last_log_term,
-                    }
-                    payload = cmd.model_dump() if hasattr(cmd, "model_dump") else cmd
-                    async with session.post(
-                        f"{peer.base_url}/internal/v1/append",
-                        params=params,
-                        json=[payload],
-                    ) as resp:
-                        data = await resp.json()
-                        responses.append(data)
-            except Exception as e:
-                logger.warning(f"Failed to send to peer {peer.id}: %s", e)
-                responses.append(
-                    {
-                        "success": False,
-                        "term": self.role_state.term,
-                        "last_log_index": last_log_index,
-                        "peer_id": peer.id,
-                        "error": str(e),
-                    }
-                )
-
-        return responses
-
     async def send_to_peer(self, peer_id: int, request: RpcRequest) -> RpcResponse:
         if len(self.peers) == 0:
             raise ValueError("No peers registered")
