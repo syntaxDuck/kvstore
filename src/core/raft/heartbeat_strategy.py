@@ -22,12 +22,13 @@ class HeartbeatStrategy(TimerStrategy):
         while self._running:
             try:
                 await self._node.send_to_all_peers(
-                    RpcRequest.ping(
+                    RpcRequest.heartbeat(
                         self._node.id,
                         self._node.role,
                         self._node.term,
                         self._node.log_details.index,
                         self._node.log_details.term,
+                        self._node.commit_index,
                     )
                 )
             except ValueError:

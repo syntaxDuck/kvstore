@@ -3,6 +3,7 @@ from typing import Any
 from fastapi import APIRouter, Request, HTTPException
 
 from ...core.logging import get_logger
+from ...core.metrics import get_metrics
 
 logger = get_logger(__name__)
 
@@ -51,6 +52,9 @@ class PingRequest:
 async def ping(request: Request) -> dict[str, Any]:
     """Peer registration endpoint."""
     node = get_node(request)
+    logger.debug(
+        f"Ping from node {node.id}: role_state.role={node.role_state.role}, is_leader={node.is_leader}"
+    )
     return {
         "status": "ok",
         "node_id": node.id,
@@ -121,6 +125,7 @@ async def append_entries(
         "success": True,
         "term": node.role_state.term,
         "last_log_index": node.log.details.index,
+        "peer_id": node.id,
     }
 
 
@@ -131,6 +136,7 @@ async def heartbeat(
     term: int,
     last_log_index: int,
     last_log_term: int,
+    commit_index: int = 0,
 ) -> dict[str, Any]:
     """Leader heartbeat/keepalive."""
     node = get_node(request)
@@ -140,7 +146,18 @@ async def heartbeat(
 
     node.election_task.reset()
 
+    if commit_index > 0 and commit_index > node.commit_index:
+        node.commit_index = commit_index
+        node._apply_committed()
+
     return {
         "success": True,
         "term": node.role_state.term,
     }
+
+
+@router.get("/metrics")
+async def get_metrics_endpoint() -> dict[str, Any]:
+    """Get collected metrics."""
+    metrics = get_metrics()
+    return metrics.get_all_metrics()

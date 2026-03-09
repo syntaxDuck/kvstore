@@ -1,10 +1,12 @@
 import asyncio
 import functools
 import random
+import time
 
 from ..config import settings
 from ..exceptions import LogError
 from ..logging import get_logger
+from ..metrics import get_metrics
 from ..peer_http_client import PeerHttpClient
 from ..types import (
     Command,
@@ -73,7 +75,11 @@ class Node:
         self.log = WriteAheadLog(f"kvs_store_{self.id}", path=data_dir)
         self.store = KeyValueStore()
 
+        self.commit_index = 0
+        self.last_applied = 0
+
         self.peers: list[PeerHttpClient] = []
+        self.match_index: dict[int, int] = {}
 
         logger.info(f"Node initialized: {self.details}")
 
@@ -84,16 +90,39 @@ class Node:
     # STATE CHANGE METHODS
     ############################################################################
     def _become_leader(self) -> None:
+        old_role = self.role_state.role
+        logger.info(
+            f"Node {self.id}: Becoming LEADER (was {old_role}, term {self.role_state.term})"
+        )
         self.election_task.stop()
         self.heartbeat_task.start()
-
+        logger.info(f"Node {self.id}: Now LEADER, election stopped, heartbeat started")
         self._schedule_role_label(ROLE_LABEL_LEADER)
 
+        self.match_index = {peer.id: 0 for peer in self.peers}
+
+        metrics = get_metrics()
+        metrics.increment_counter_sync("raft_role_changes.leader")
+        if hasattr(self, "_election_start_time"):
+            duration_ms = (time.perf_counter() - self._election_start_time) * 1000
+            metrics.record_timing_sync("raft_election_duration_ms", duration_ms)
+            delattr(self, "_election_start_time")
+
     def _step_down(self) -> None:
+        old_role = self.role_state.role
+        logger.info(
+            f"Node {self.id}: Stepping down from {old_role} to FOLLOWER (term {self.role_state.term})"
+        )
         self.heartbeat_task.stop()
         self.election_task.start()
-
+        logger.info(
+            f"Node {self.id}: Now FOLLOWER, heartbeat stopped, election started"
+        )
         self._schedule_role_label(ROLE_LABEL_FOLLOWER)
+        self.commit_index = 0
+
+        metrics = get_metrics()
+        metrics.increment_counter_sync(f"raft_role_changes.follower")
 
     # K8S
     ############################################################################
@@ -340,20 +369,35 @@ class Node:
         candidate_last_log_index: int,
         candidate_last_log_term: int,
     ) -> bool:
-        if candidate_term < self.log.details.term:
+        logger.info(
+            f"Vote decision: candidate={candidate_id}, candidate_term={candidate_term}, my_log_term={self.log.details.term}, my_role_term={self.role_state.term}"
+        )
+
+        if candidate_term < self.role_state.term:
+            logger.info(
+                f"Vote NO: candidate_term {candidate_term} < my_term {self.role_state.term}"
+            )
             return False
 
         if self.role_state.voted_for and self.role_state.voted_for != candidate_id:
+            logger.info(f"Vote NO: already voted for {self.role_state.voted_for}")
             return False
 
         if candidate_last_log_term < self.log.details.term:
+            logger.info(
+                f"Vote NO: candidate_last_log_term {candidate_last_log_term} < log_term {self.log.details.term}"
+            )
             return False
         if (
             candidate_last_log_term == self.log.details.term
             and candidate_last_log_index < self.log.details.index
         ):
+            logger.info(
+                f"Vote NO: candidate_last_log_index {candidate_last_log_index} < log_index {self.log.details.index}"
+            )
             return False
 
+        logger.info(f"Vote YES for candidate {candidate_id}")
         return True
 
     # CLASS PROPS
@@ -397,7 +441,46 @@ class Node:
 
     @property
     def leader_address(self) -> tuple[str, int] | None:
+        if self.is_leader:
+            return self.address
         for peer in self.peers:
             if peer.role == Role.LEADER:
                 return peer.address
         return None
+
+    def update_match_index(self, peer_id: int, match_idx: int) -> None:
+        """Update match index for a peer and check for new commits."""
+        self.match_index[peer_id] = match_idx
+        self._update_commit_index()
+
+    def _update_commit_index(self) -> None:
+        """Update commit index based on majority replication."""
+        if not self.is_leader:
+            return
+
+        total_nodes = len(self.peers) + 1
+        majority = total_nodes // 2 + 1
+
+        sorted_matches = sorted(self.match_index.values(), reverse=True)
+        for i, match_idx in enumerate(sorted_matches):
+            replicated_count = i + 1
+            if replicated_count >= majority:
+                if match_idx > self.commit_index:
+                    old_commit = self.commit_index
+                    self.commit_index = match_idx
+                    logger.info(
+                        f"Node {self.id}: Commit index updated from {old_commit} to {self.commit_index}"
+                    )
+                    self._apply_committed()
+                return
+
+    def _apply_committed(self) -> None:
+        """Apply all committed entries to the state machine."""
+        while self.last_applied < self.commit_index:
+            self.last_applied += 1
+            entry = self.log.replay_log_from(self.last_applied)
+            if entry:
+                self.store.apply(entry.cmd)
+                logger.info(
+                    f"Node {self.id}: Applied entry index {self.last_applied}, cmd={entry.cmd}"
+                )

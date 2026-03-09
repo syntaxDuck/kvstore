@@ -80,3 +80,15 @@ class WriteAheadLog:
         if self.file_handle and not self.file_handle.closed:
             self.file_handle.close()
             self.file_handle = None
+
+    def replay_log_from(self, index: int) -> LogEntry | None:
+        """Replay log starting from a specific index."""
+        if not self.file_handle:
+            raise LogError
+
+        self.file_handle.seek(0)
+        for line in self.file_handle:
+            entry = LogEntry.deserialize(line)
+            if entry.index == index:
+                return entry
+        return None

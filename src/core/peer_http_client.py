@@ -94,6 +94,7 @@ class PeerHttpClient:
                         "term": message.term,
                         "last_log_index": message.last_log_index,
                         "last_log_term": message.last_log_term,
+                        "commit_index": getattr(message, "commit_index", 0),
                     }
                     async with session.post(
                         f"{self.base_url}{endpoint}", params=params

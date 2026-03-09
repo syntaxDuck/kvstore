@@ -12,6 +12,7 @@ class RpcRequest(BaseModel):
     term: int = 0
     last_log_index: int = 0
     last_log_term: int = 0
+    commit_index: int = 0
     payload: Any | None = None
 
     @classmethod
@@ -40,6 +41,7 @@ class RpcRequest(BaseModel):
         term: int = 0,
         last_log_index: int = 0,
         last_log_term: int = 0,
+        commit_index: int = 0,
     ):
         return cls(
             type="HEARTBEAT",
@@ -48,6 +50,7 @@ class RpcRequest(BaseModel):
             term=term,
             last_log_index=last_log_index,
             last_log_term=last_log_term,
+            commit_index=commit_index,
         )
 
     @classmethod

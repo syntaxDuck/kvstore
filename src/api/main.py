@@ -1,13 +1,33 @@
 from contextlib import asynccontextmanager
+import time
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware
 
 from .routes import internal_router, client_router
 from ..core.config import settings
 from ..core.logging import get_logger
+from ..core.metrics import get_metrics
 
 logger = get_logger(__name__)
+
+
+class MetricsMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        metrics = get_metrics()
+        start_time = time.perf_counter()
+
+        response = await call_next(request)
+
+        duration_ms = (time.perf_counter() - start_time) * 1000
+        endpoint = f"{request.method} {request.url.path}"
+        metrics.record_timing_sync(f"api_request_duration_ms.{endpoint}", duration_ms)
+        metrics.increment_counter_sync(
+            f"api_request_count.{endpoint}.{response.status_code}"
+        )
+
+        return response
 
 
 @asynccontextmanager
@@ -35,6 +55,8 @@ def create_api() -> FastAPI:
         allow_headers=settings.CORS_ALLOW_HEADERS,
         allow_credentials=settings.CORS_ALLOW_CREDENTIALS,
     )
+
+    app.add_middleware(MetricsMiddleware)
 
     app.include_router(internal_router, prefix="/internal/v1")
     app.include_router(client_router, prefix="/client/v1")

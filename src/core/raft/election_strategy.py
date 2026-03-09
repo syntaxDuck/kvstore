@@ -1,5 +1,6 @@
 from asyncio import sleep
 from typing import Coroutine, Any
+import time
 
 from ..logging import get_logger
 from ..types import RpcRequest
@@ -38,6 +39,9 @@ class ElectionStrategy(TimerStrategy):
         logger.info(f"Node: {self._node.id}, Starting election...")
 
         self._node.role_state.become_candidate(self._node.id)
+
+        if hasattr(self._node, "_election_start_time"):
+            self._node._election_start_time = time.perf_counter()
 
         try:
             ballots = await self._node.send_to_all_peers(
