@@ -139,6 +139,9 @@ Recommended first checks:
 2. Search logs for `peer_rpc_failure` and `peer_rpc_retry`.
 3. Correlate `term` + `rpc_type=REQUEST_VOTE|APPEND_ENTRY|HEARTBEAT` for election/replication issues.
 
+Extended operational playbooks (failover + snapshot recovery):
+- `docs/runbook.md`
+
 ## Contributor Notes
 
 Before opening a PR, run the same quality gates enforced in CI:
