@@ -2,9 +2,11 @@ from typing import Any
 
 from fastapi import APIRouter, Request, HTTPException
 
+from ...core.config import settings
 from ...core.logging import get_logger
 from ...core.metrics import get_metrics
 from ...core.types import Command
+from ...core.raft.role_state import Role
 
 logger = get_logger(__name__)
 
@@ -25,11 +27,68 @@ async def health_check(request: Request) -> dict[str, str]:
 
 
 @router.get("/ready")
-async def ready_check(request: Request) -> dict[str, str]:
+async def ready_check(request: Request) -> dict[str, Any]:
     node = request.app.state.node
     if node is None:
         raise HTTPException(status_code=503, detail="Not ready")
-    return {"status": "ready"}
+
+    issues: list[str] = []
+
+    if node.role not in {Role.LEADER, Role.FOLLOWER, Role.CANDIDATE}:
+        issues.append(f"invalid_role:{node.role}")
+    if node.term < 0:
+        issues.append("invalid_term")
+    if node.commit_index > node.log.details.index:
+        issues.append("commit_index_ahead_of_log")
+    if node.last_applied > node.commit_index:
+        issues.append("last_applied_ahead_of_commit")
+
+    reachable_peers = 0
+    peer_errors: list[str] = []
+    for peer in node.peers:
+        try:
+            res = await peer.ping()
+            if res.is_ok:
+                reachable_peers += 1
+            else:
+                peer_errors.append(f"peer_{peer.id}:{res.payload}")
+        except Exception as exc:
+            peer_errors.append(f"peer_{peer.id}:{exc}")
+
+    total_nodes = len(node.peers) + 1
+    quorum = total_nodes // 2 + 1
+    reachable_nodes = 1 + reachable_peers
+
+    if node.is_leader and reachable_nodes < quorum:
+        issues.append(
+            f"leader_without_quorum:reachable_nodes={reachable_nodes},required={quorum}"
+        )
+
+    if (
+        node.role in {Role.FOLLOWER, Role.CANDIDATE}
+        and settings.CLUSTER_SIZE > 1
+        and len(node.peers) > 0
+        and reachable_peers == 0
+    ):
+        issues.append("no_reachable_peers")
+
+    if issues:
+        detail = {
+            "status": "not_ready",
+            "issues": issues,
+            "reachable_peers": reachable_peers,
+            "total_peers": len(node.peers),
+            "peer_errors": peer_errors,
+        }
+        raise HTTPException(status_code=503, detail=detail)
+
+    return {
+        "status": "ready",
+        "role": node.role,
+        "term": node.term,
+        "reachable_peers": reachable_peers,
+        "total_peers": len(node.peers),
+    }
 
 
 @router.get("/leader")
