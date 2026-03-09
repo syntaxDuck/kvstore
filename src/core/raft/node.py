@@ -79,6 +79,8 @@ class Node:
 
         self._schedule_role_label(ROLE_LABEL_FOLLOWER)
 
+        self.election_task.start()
+
     # STATE CHANGE METHODS
     ############################################################################
     def _become_leader(self) -> None:

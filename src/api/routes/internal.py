@@ -40,13 +40,6 @@ async def leader_info(request: Request) -> dict[str, Any]:
             "address": f"{node.host}:{node.port}",
         }
 
-    leader_addr = node.leader_address
-    if leader_addr:
-        return {
-            "leader_id": None,
-            "redirect": f"{leader_addr[0]}:{leader_addr[1]}",
-        }
-
     return {"leader_id": None, "status": "unknown"}
 
 

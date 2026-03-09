@@ -1,4 +1,5 @@
 import asyncio
+import os
 import uvicorn
 
 from src.api.main import create_api
@@ -13,6 +14,9 @@ logger = get_logger(__name__)
 
 node: Node | None = None
 
+LOCAL_DEV = os.environ.get("LOCAL_DEV", "true").lower() == "true"
+BASE_PORT = int(os.environ.get("BASE_PORT", "8080"))
+
 
 def get_ordinal_from_pod_name(pod_name: str) -> int:
     if "-" in pod_name:
@@ -25,6 +29,15 @@ def get_ordinal_from_pod_name(pod_name: str) -> int:
 
 def compute_peer_addresses() -> list[tuple[str, int]]:
     peers = []
+
+    if LOCAL_DEV:
+        for i in range(settings.CLUSTER_SIZE):
+            if i == settings.NODE_ID:
+                continue
+            port = BASE_PORT + i
+            peers.append(("localhost", port))
+        return peers
+
     cluster_size = settings.CLUSTER_SIZE
     service_name = settings.SERVICE_NAME
     namespace = settings.NAMESPACE
@@ -51,7 +64,10 @@ async def discover_and_register_peers(node: Node) -> None:
     while asyncio.get_event_loop().time() - start_time < timeout:
         registered = 0
         for host, port in peer_addresses:
-            peer_ordinal = int(host.split("-")[1].split(".")[0])
+            if LOCAL_DEV:
+                peer_ordinal = port - BASE_PORT
+            else:
+                peer_ordinal = int(host.split("-")[1].split(".")[0])
             try:
                 peer_details = NodeDetails(
                     id=peer_ordinal,
@@ -85,6 +101,9 @@ async def discover_and_register_peers(node: Node) -> None:
 async def main():
     global node
 
+    if LOCAL_DEV:
+        settings.DATA_DIR = f"data/node{settings.NODE_ID}"
+
     logger.info("Starting KVStore node with config:")
     logger.info(f"  NODE_ID: {settings.NODE_ID}")
     logger.info(f"  API_PORT: {settings.API_PORT}")
@@ -93,6 +112,8 @@ async def main():
     logger.info(f"  SERVICE_NAME: {settings.SERVICE_NAME}")
     logger.info(f"  NAMESPACE: {settings.NAMESPACE}")
     logger.info(f"  DATA_DIR: {settings.DATA_DIR}")
+    if LOCAL_DEV:
+        logger.info("  LOCAL_DEV: true")
 
     node = Node(
         id=settings.NODE_ID,

@@ -110,6 +110,8 @@ class PeerHttpClient:
             logger.error(f"Error communicating with peer {self.id}: {e}")
             raise
 
+        raise ValueError(f"Unhandled message type: {message.type}")
+
     async def ping(self) -> RpcResponse:
         """Simple ping to check if peer is reachable."""
         message = RpcRequest.ping(self.id, self.role)

@@ -15,15 +15,15 @@ CLUSTER_SIZE = 3
 
 CONNECTION_MODE = "localhost"
 
-LOCALHOST_API_PORT = 30080
+LOCALHOST_API_PORT = 8080
 
 LEADER_SERVICE_NAME = "kvstore-leader"
 LEADER_SERVICE_HOST = f"{LEADER_SERVICE_NAME}.{NAMESPACE}.svc.cluster.local"
-LEADER_LOCALHOST_PORT = 30080
+LEADER_LOCALHOST_PORT = 8080
 
 SERVICE_HOST = f"{SERVICE_NAME}.{NAMESPACE}.svc.cluster.local"
-LEADER_RETRY_LIMIT = 5
-LEADER_RETRY_DELAY = 0.25
+LEADER_RETRY_LIMIT = 10
+LEADER_RETRY_DELAY = 0.5
 WRITE_RETRY_LIMIT = 6
 WRITE_RETRY_DELAY = 0.5
 
@@ -49,7 +49,7 @@ def _use_service_endpoint() -> bool:
 
 
 def _node_probe_range() -> range:
-    return range(CLUSTER_SIZE if not _use_service_endpoint() else 1)
+    return range(CLUSTER_SIZE)
 
 
 async def _http_get(
@@ -112,6 +112,10 @@ async def _probe_leader_from_host(
             leader_id = data.get("leader_id")
             if leader_id is not None:
                 return leader_id
+            status = data.get("status")
+            if status == "unknown":
+                await asyncio.sleep(LEADER_RETRY_DELAY)
+                continue
         except json.JSONDecodeError:
             pass
         logger.debug(
