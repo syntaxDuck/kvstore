@@ -36,5 +36,5 @@ jobs:
       - name: Type check
         run: uv run mypy
 
-      - name: Run tests
-        run: uv run pytest -q
+      - name: Run tests with coverage guardrails
+        run: uv run pytest -q --cov --cov-report=term-missing

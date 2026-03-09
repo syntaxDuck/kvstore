@@ -19,6 +19,7 @@ dependencies = [
 dev = [
     "ruff>=0.13.2",
     "mypy>=1.18.2",
+    "pytest-cov>=7.0.0",
 ]
 
 [tool.ruff]
@@ -33,3 +34,14 @@ ignore = ["E501"]
 python_version = "3.13"
 ignore_missing_imports = true
 files = ["src/core/config.py", "src/core/peer_http_client.py", "src/core/raft/log.py"]
+
+[tool.coverage.run]
+source = [
+    "src.core.raft",
+    "src.core.peer_http_client",
+]
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = false
+fail_under = 60
