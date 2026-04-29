@@ -1,7 +1,5 @@
 # KVStore
 
-[![CI](https://github.com/kameroncomer/kvstore/actions/workflows/ci.yml/badge.svg)](https://github.com/kameroncomer/kvstore/actions/workflows/ci.yml)
-
 A distributed key-value store with Raft consensus and HTTP-based node communication.
 
 Recent project updates are tracked in `CHANGELOG.md`.
